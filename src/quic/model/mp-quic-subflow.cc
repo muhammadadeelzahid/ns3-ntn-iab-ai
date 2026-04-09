@@ -36,6 +36,7 @@
 
 #include "quic-socket-tx-scheduler.h"
 #include "quic-socket-base.h"
+#include "quic-socket-state-registry.h"
 
 #include <algorithm>
 #include <math.h>
@@ -74,6 +75,7 @@ MpQuicSubFlow::MpQuicSubFlow()
 
     //For congestion control
     m_tcb = CreateObject<QuicSocketState> ();
+    QuicSocketStateRegistry::Register(PeekPointer(m_tcb));
     m_tcb->m_cWnd = m_tcb->m_initialCWnd;
     m_tcb->m_ssThresh = m_tcb->m_initialSsThresh;
     m_tcb->m_pacingRate = m_tcb->m_maxPacingRate;
@@ -88,6 +90,7 @@ MpQuicSubFlow::MpQuicSubFlow()
 
 MpQuicSubFlow::~MpQuicSubFlow()
 {
+    QuicSocketStateRegistry::Unregister(PeekPointer(m_tcb));
     m_flowId     = 0;
 }
 

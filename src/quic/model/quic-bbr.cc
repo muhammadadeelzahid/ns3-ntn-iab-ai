@@ -554,6 +554,24 @@ QuicBbr::UpdateControlParameters (Ptr<QuicSocketState> tcb, const struct RateSam
   SetSendQuantum (tcb);
   SetCwnd (tcb, rs);
 
+  // --------------------------------------------------------------------------
+  // Metrics cache update: record BBR model/control outputs into the TCB cache
+  // --------------------------------------------------------------------------
+  {
+    auto& m = tcb->m_aiMetrics;
+    m.time_s = Simulator::Now ().GetSeconds ();
+    m.btlbw_bps = m_maxBwFilter.GetBest ().GetBitRate ();
+    m.rtprop_s = (m_rtProp == Time::Max ()) ? 0.0 : m_rtProp.GetSeconds ();
+    m.pacing_gain = m_pacingGain;
+    m.cwnd_gain = m_cWndGain;
+    m.pacing_rate_bps = tcb->m_pacingRate.Get ().GetBitRate ();
+    m.target_cwnd_bytes = m_targetCWnd;
+    m.cwnd_bytes = tcb->m_cWnd.Get ();
+    m.bytes_in_flight_bytes = tcb->m_bytesInFlight.Get ();
+    m.unacked_data_bytes = m.bytes_in_flight_bytes;
+    m.bbr_mode = static_cast<uint8_t>(m_state.Get ());
+  }
+
   {
     std::ostringstream os;
     os << std::fixed << std::setprecision(6) << Simulator::Now ().GetSeconds () << ","

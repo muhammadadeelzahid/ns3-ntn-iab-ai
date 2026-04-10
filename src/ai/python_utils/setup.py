@@ -26,7 +26,6 @@ setuptools.setup(name=name,
                  author="Pengyu Liu and Muyuan Shen",
                  author_email="muyuan_shen@hust.edu.cn",
                  packages=setuptools.find_packages(),
-                 install_requires=["psutil"],
                  classifiers=[
                      "Programming Language :: Python :: 3",
                      "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",

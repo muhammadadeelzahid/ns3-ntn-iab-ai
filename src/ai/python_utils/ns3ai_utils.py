@@ -20,7 +20,6 @@
 import os
 import shlex
 import subprocess
-import psutil
 import time
 import signal
 
@@ -77,19 +76,30 @@ def run_single_simulation(path, pname, setting=None, env=None, show_output=False
 # used to kill the waf/simulation process and its child processes
 def kill_proc_tree(p, timeout=None, on_terminate=None):
     print('ns3ai_utils: Killing subprocesses...')
+    # waf is started with setpgrp — kill the whole process group.
+    _ = on_terminate  # unused; kept for signature compatibility
+    pid = None
     if isinstance(p, int):
-        p = psutil.Process(p)
-    elif not isinstance(p, psutil.Process):
-        p = psutil.Process(p.pid)
-    ch = [p]+p.children(recursive=True)
-    for c in ch:
+        pid = p
+    elif hasattr(p, 'pid'):
+        pid = p.pid
+    if pid is not None and pid > 0:
         try:
-            c.kill()
+            gid = os.getpgid(pid)
+            os.killpg(gid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                if hasattr(p, 'kill'):
+                    p.kill()
+            except Exception:
+                pass
+    if hasattr(p, 'wait'):
+        wait_s = timeout if timeout is not None else 5
+        try:
+            p.wait(timeout=wait_s)
         except Exception:
-            continue
-    succ, err = psutil.wait_procs(ch, timeout=timeout,
-                                  callback=on_terminate)
-    return succ, err
+            pass
+    return [], []
 
 
 # According to Python signal docs, after a signal is received, the

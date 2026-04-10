@@ -20,7 +20,7 @@ export PYTHONPATH="/your/clone/ns3-ntn-iab/src/ai/python_utils${PYTHONPATH:+:$PY
 python3 your_driver.py
 ```
 
-Dependency: `psutil` (`pip install psutil` if missing).
+`Experiment.kill()` tears down the simulation via `killpg` (waf runs in its own process group).
 
 ## Smoke test
 

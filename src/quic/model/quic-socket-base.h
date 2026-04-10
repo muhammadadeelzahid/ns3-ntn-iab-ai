@@ -58,6 +58,7 @@ class QuicL5Protocol;
 class QuicL4Protocol;
 class MpQuicPathManager;
 class MpQuicScheduler;
+class QuicSocketBase;
 
 /**
  * \brief Data structure that records the congestion state of a connection
@@ -199,6 +200,14 @@ public:
     uint8_t bbr_mode{0}; // 0..3
   } m_aiMetrics;
 
+  /**
+   * Owning QUIC socket for this subflow TCB (non-owning raw ptr to avoid ref cycles).
+   * Cleared in MpQuicSubFlow destructor.
+   */
+  QuicSocketBase* m_parentSocket{nullptr};
+  void SetParentSocket (Ptr<QuicSocketBase> socket);
+  Ptr<QuicSocketBase> GetParentSocket () const;
+
   //For OLIA use
   uint32_t m_bytesBeforeLost1;
   uint32_t m_bytesBeforeLost2;
@@ -308,6 +317,11 @@ public:
    * \param algo Algorithm to be installed
    */
   void SetCongestionControlAlgorithm (Ptr<TcpCongestionOps> algo);
+
+  /**
+   * \return installed congestion-ops (e.g. QuicBbr), or null before install
+   */
+  Ptr<TcpCongestionOps> GetCongestionControlAlgorithm () const;
 
   /**
    * \brief Common part of the two Bind(), i.e. set callback to receive data

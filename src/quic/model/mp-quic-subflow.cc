@@ -90,6 +90,10 @@ MpQuicSubFlow::MpQuicSubFlow()
 
 MpQuicSubFlow::~MpQuicSubFlow()
 {
+    if (m_tcb)
+      {
+        m_tcb->SetParentSocket (nullptr);
+      }
     QuicSocketStateRegistry::Unregister(PeekPointer(m_tcb));
     m_flowId     = 0;
 }

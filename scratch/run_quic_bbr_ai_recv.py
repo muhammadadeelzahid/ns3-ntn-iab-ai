@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Phase 1: receive Cpp2Py observations, log fields; Py2Cpp handshake with no policy writes.
+# Phase 1: receive Cpp2Py observations and log fields.
+# Phase 2 (partial): write dummy Py2Cpp actions per connection each tick (C++ apply step is separate).
 #
 # Run from repository root: python3 scratch/run_quic_bbr_ai_recv.py
 # Or: cd scratch && ./run_quic_bbr_ai_recv.py
@@ -26,8 +27,53 @@ import ns3ai_quic_bbr_ai_msg_py as py_binding  # noqa: E402
 from ns3ai_utils import Experiment  # noqa: E402
 
 
+def fill_dummy_py2cpp_actions(py2cpp, cpp2py):
+    """
+    Per-connection dummy actions for Phase 2 bring-up.
+
+    Copies identity from observations, then sets fixed transport + BBR targets
+    (see quic-bbr-ai-msg.h). C++ must read GetPy2CppVector() and apply; until then
+    this only populates shared memory for testing the write path.
+    """
+    n = len(cpp2py)
+    py2cpp.resize(n)
+    for i in range(n):
+        obs = cpp2py[i].obs
+        a = py2cpp[i]
+        a.node_id = obs.node_id
+        a.conn_id = obs.conn_id
+        a.path_id = obs.path_id
+        a.alpha = 1.0
+
+        # Transport knobs (plan defaults)
+        a.has_reordering_threshold = 1
+        a.reordering_threshold = 2
+        a.max_step_reordering_threshold = 1
+
+        a.has_time_reordering_fraction = 1
+        a.time_reordering_fraction = 1.125  # 9/8
+        a.max_step_time_reordering_fraction = 0.05
+
+        # BBR gain targets (C++ QuicBbr apply wiring comes later)
+        a.has_target_pacing_gain = 1
+        a.target_pacing_gain = 1.25
+        a.max_step_pacing_gain = 0.05
+
+        a.has_target_cwnd_gain = 1
+        a.target_cwnd_gain = 2.0
+        a.max_step_cwnd_gain = 0.1
+
+        # Optional caps: leave unset (0 = no cap per msg.h)
+        a.has_pacing_rate_cap_bps = 0
+        a.pacing_rate_cap_bps = 0
+        a.has_cwnd_cap_bytes = 0
+        a.cwnd_cap_bytes = 0
+
+
 def main():
-    parser = argparse.ArgumentParser(description='QUIC BBR AI: recv-only Python loop with logging')
+    parser = argparse.ArgumentParser(
+        description='QUIC BBR AI: Cpp2Py logging + dummy Py2Cpp actions per tick'
+    )
     parser.add_argument('--num-ues', type=int, default=1, help='Scratch numUes')
     parser.add_argument('--ai-dt-ms', type=float, default=50.0, help='Scratch aiDtMs (>0 enables AI tick)')
     parser.add_argument(
@@ -108,6 +154,32 @@ def main():
             msg.PyRecvEnd()
 
             msg.PySendBegin()
+            try:
+                py2cpp = msg.GetPy2CppVector()
+                fill_dummy_py2cpp_actions(py2cpp, cpp2py)
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    for j in range(len(py2cpp)):
+                        d = py2cpp[j]
+                        logging.debug(
+                            '  Py2Cpp[%d] node=%s conn=%s path=%s '
+                            'reord_th=%s/%s t_reord=%s/%s '
+                            'p_gain=%s/%s cwnd_gain=%s/%s',
+                            j,
+                            d.node_id,
+                            d.conn_id,
+                            d.path_id,
+                            d.has_reordering_threshold,
+                            d.reordering_threshold,
+                            d.has_time_reordering_fraction,
+                            d.time_reordering_fraction,
+                            d.has_target_pacing_gain,
+                            d.target_pacing_gain,
+                            d.has_target_cwnd_gain,
+                            d.target_cwnd_gain,
+                        )
+            except Exception:
+                logging.exception('Error while writing Py2Cpp dummy actions')
+                raise
             msg.PySendEnd()
             tick += 1
 

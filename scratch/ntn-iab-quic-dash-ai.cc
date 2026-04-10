@@ -56,6 +56,8 @@
 #include "ns3/dash-module.h"
 #include "ns3/quic-socket-state-registry.h"
 #include <algorithm>
+#include <cmath>
+#include <unordered_map>
 #include <vector>
 #include <iomanip>
 #include <fstream>
@@ -624,6 +626,69 @@ CopyMetricsToObs(const QuicSocketState::AiMetrics& src, QuicBbrAiConnObs& dst, d
     dst.is_app_limited = src.is_app_limited;
 }
 
+bool
+QuicBbrAiActionMatchesTcb(const QuicSocketState& tcb, const QuicBbrAiPy2CppMsg& a)
+{
+    if (a.node_id != 0 && tcb.m_aiMetrics.node_id != 0 && a.node_id != tcb.m_aiMetrics.node_id)
+    {
+        return false;
+    }
+    if (a.conn_id != 0 && tcb.m_aiMetrics.conn_id != 0 && a.conn_id != tcb.m_aiMetrics.conn_id)
+    {
+        return false;
+    }
+    if (a.path_id != tcb.m_aiMetrics.path_id)
+    {
+        if (a.path_id != 0 || tcb.m_aiMetrics.path_id != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void
+ApplyPy2CppTransportKnobs(Ptr<QuicSocketState> tcb, const QuicBbrAiPy2CppMsg& a)
+{
+    if (!tcb)
+    {
+        return;
+    }
+    double alpha = a.alpha;
+    if (!std::isfinite(alpha))
+    {
+        alpha = 1.0;
+    }
+    alpha = std::max(0.0, std::min(1.0, alpha));
+
+    if (a.has_reordering_threshold)
+    {
+        const uint32_t cur = tcb->m_kReorderingThreshold;
+        const uint32_t tgt = a.reordering_threshold;
+        const uint32_t ms =
+            a.max_step_reordering_threshold ? a.max_step_reordering_threshold : 1u;
+        const int64_t d = static_cast<int64_t>(tgt) - static_cast<int64_t>(cur);
+        const int64_t s =
+            std::max(-static_cast<int64_t>(ms), std::min(static_cast<int64_t>(ms), d));
+        const double stepped = static_cast<double>(cur) + static_cast<double>(s);
+        const double next = (1.0 - alpha) * static_cast<double>(cur) + alpha * stepped;
+        tcb->m_kReorderingThreshold =
+            static_cast<uint32_t>(std::lround(std::max(1.0, std::min(256.0, next))));
+    }
+    if (a.has_time_reordering_fraction)
+    {
+        double cur = tcb->m_kTimeReorderingFraction;
+        double tgt = a.time_reordering_fraction;
+        const double ms = (a.max_step_time_reordering_fraction > 0.0 &&
+                           std::isfinite(a.max_step_time_reordering_fraction))
+                              ? a.max_step_time_reordering_fraction
+                              : 0.05;
+        const double stepped = cur + std::max(-ms, std::min(ms, tgt - cur));
+        const double next = (1.0 - alpha) * cur + alpha * stepped;
+        tcb->m_kTimeReorderingFraction = std::max(1.0, std::min(2.0, next));
+    }
+}
+
 void
 ConfigureQuicBbrAiMsgInterface()
 {
@@ -665,7 +730,62 @@ QuicBbrAiPeriodicStep()
     msgIface->CppSendEnd();
 
     msgIface->CppRecvBegin();
-    // Phase 2: read GetPy2CppVector() and apply actions to QuicBbr / QuicSocketState
+    auto* py2cpp = msgIface->GetPy2CppVector();
+    const uint32_t m = std::min(n, static_cast<uint32_t>(py2cpp->size()));
+
+    std::unordered_map<void*, uint32_t> firstRowForSocket;
+    for (uint32_t i = 0; i < m; ++i)
+    {
+        Ptr<QuicSocketState> tcb = tcbs[i];
+        const QuicBbrAiPy2CppMsg& act = (*py2cpp)[i];
+        if (!QuicBbrAiActionMatchesTcb(*tcb, act))
+        {
+            continue;
+        }
+        ApplyPy2CppTransportKnobs(tcb, act);
+        Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
+        if (!sock)
+        {
+            continue;
+        }
+        void* sk = PeekPointer(sock);
+        if (firstRowForSocket.find(sk) == firstRowForSocket.end())
+        {
+            firstRowForSocket[sk] = i;
+        }
+    }
+    for (const auto& kv : firstRowForSocket)
+    {
+        const uint32_t i = kv.second;
+        Ptr<QuicSocketState> tcb = tcbs[i];
+        const QuicBbrAiPy2CppMsg& act = (*py2cpp)[i];
+        if (!QuicBbrAiActionMatchesTcb(*tcb, act))
+        {
+            continue;
+        }
+        Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
+        if (!sock)
+        {
+            continue;
+        }
+        Ptr<QuicBbr> bbr = DynamicCast<QuicBbr>(sock->GetCongestionControlAlgorithm());
+        if (!bbr)
+        {
+            continue;
+        }
+        bbr->ApplyAiSafeControls(tcb,
+                                 static_cast<bool>(act.has_target_pacing_gain),
+                                 act.target_pacing_gain,
+                                 act.max_step_pacing_gain,
+                                 static_cast<bool>(act.has_target_cwnd_gain),
+                                 act.target_cwnd_gain,
+                                 act.max_step_cwnd_gain,
+                                 act.alpha,
+                                 static_cast<bool>(act.has_pacing_rate_cap_bps),
+                                 act.pacing_rate_cap_bps,
+                                 static_cast<bool>(act.has_cwnd_cap_bytes),
+                                 act.cwnd_cap_bytes);
+    }
     msgIface->CppRecvEnd();
 }
 } // namespace

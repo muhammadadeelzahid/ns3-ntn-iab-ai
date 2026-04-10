@@ -24,11 +24,15 @@
 
 #include "quic-bbr.h"
 #include "ns3/log.h"
+#include "ns3/data-rate.h"
 #include "ns3/quic-socket-base.h"
 #include "ns3/quic-socket-tx-buffer.h"
 #include "ns3/simulator.h"
-#include <sstream>
+#include <algorithm>
+#include <cmath>
 #include <iomanip>
+#include <limits>
+#include <sstream>
 
 namespace ns3 {
 
@@ -631,6 +635,82 @@ QuicBbr::GetPacingGain ()
 {
   NS_LOG_FUNCTION (this);
   return m_pacingGain;
+}
+
+void
+QuicBbr::ApplyAiSafeControls (Ptr<QuicSocketState> tcb,
+                              bool hasPacingGain,
+                              double targetPacingGain,
+                              double maxStepPacing,
+                              bool hasCwndGain,
+                              double targetCwndGain,
+                              double maxStepCwnd,
+                              double alphaIn,
+                              bool hasPacingCap,
+                              uint64_t pacingCapBps,
+                              bool hasCwndCap,
+                              uint64_t cwndCapBytes)
+{
+  NS_LOG_FUNCTION (this << tcb << hasPacingGain << hasCwndGain << hasPacingCap << hasCwndCap);
+  if (!tcb)
+    {
+      return;
+    }
+  if (!hasPacingGain && !hasCwndGain && !hasPacingCap && !hasCwndCap)
+    {
+      return;
+    }
+
+  double alpha = alphaIn;
+  if (!std::isfinite (alpha))
+    {
+      alpha = 1.0;
+    }
+  alpha = std::max (0.0, std::min (1.0, alpha));
+
+  auto applySmooth = [&] (double& cur, bool has, double tgt, double maxStep, double defStep, double lo, double hi) {
+    if (!has || alpha <= 0.0)
+      {
+        return;
+      }
+    const double ms = (maxStep > 0.0 && std::isfinite (maxStep)) ? maxStep : defStep;
+    const double stepped = cur + std::max (-ms, std::min (ms, tgt - cur));
+    cur = std::max (lo, std::min (hi, (1.0 - alpha) * cur + alpha * stepped));
+  };
+
+  applySmooth (m_pacingGain, hasPacingGain, targetPacingGain, maxStepPacing, 0.05, 0.01, 25.0);
+  applySmooth (m_cWndGain, hasCwndGain, targetCwndGain, maxStepCwnd, 0.1, 0.01, 25.0);
+
+  const uint64_t bwBps = m_maxBwFilter.GetBest ().GetBitRate ();
+  if (bwBps > 0 && (hasPacingGain || hasPacingCap))
+    {
+      const double nom =
+          std::min (m_pacingGain * static_cast<double> (bwBps),
+                    static_cast<double> (std::numeric_limits<uint64_t>::max ()));
+      DataRate nominal (static_cast<uint64_t> (nom));
+      nominal = std::min (nominal, tcb->m_maxPacingRate);
+      if (hasPacingCap && pacingCapBps > 0)
+        {
+          nominal = std::min (nominal, DataRate (pacingCapBps));
+        }
+      tcb->m_pacingRate = nominal;
+    }
+  else if (hasPacingCap && pacingCapBps > 0)
+    {
+      tcb->m_pacingRate = std::min (tcb->m_pacingRate.Get (), DataRate (pacingCapBps));
+    }
+
+  if (hasCwndGain || hasCwndCap)
+    {
+      UpdateTargetCwnd (tcb);
+      if (hasCwndCap && cwndCapBytes > 0)
+        {
+          const uint32_t cap32 = static_cast<uint32_t> (
+              std::min (cwndCapBytes, static_cast<uint64_t> (std::numeric_limits<uint32_t>::max ())));
+          m_targetCWnd = std::min (m_targetCWnd, cap32);
+          tcb->m_cWnd = std::min (tcb->m_cWnd.Get (), cap32);
+        }
+    }
 }
 
 std::string

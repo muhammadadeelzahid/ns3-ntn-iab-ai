@@ -503,10 +503,23 @@ QuicSocketState::QuicSocketState (const QuicSocketState &other)
       other.m_kDelayedAckTimeout),
     m_kDefaultInitialRtt (
       other.m_kDefaultInitialRtt),
-    m_kMaxPacketsReceivedBeforeAckSend (other.m_kMaxPacketsReceivedBeforeAckSend)
+    m_kMaxPacketsReceivedBeforeAckSend (other.m_kMaxPacketsReceivedBeforeAckSend),
+    m_parentSocket (other.m_parentSocket)
 {
   m_initialCWnd = 10 * m_segmentSize;
   m_lossDetectionAlarm.Cancel ();
+}
+
+void
+QuicSocketState::SetParentSocket (Ptr<QuicSocketBase> socket)
+{
+  m_parentSocket = socket ? PeekPointer (socket) : nullptr;
+}
+
+Ptr<QuicSocketBase>
+QuicSocketState::GetParentSocket () const
+{
+  return m_parentSocket ? Ptr<QuicSocketBase> (m_parentSocket) : nullptr;
 }
 
 QuicSocketBase::QuicSocketBase (void)
@@ -3272,6 +3285,12 @@ QuicSocketBase::SetCongestionControlAlgorithm (Ptr<TcpCongestionOps> algo)
       m_quicCongestionControlLegacy = true;
     }
   m_congestionControl = algo;
+}
+
+Ptr<TcpCongestionOps>
+QuicSocketBase::GetCongestionControlAlgorithm () const
+{
+  return m_congestionControl;
 }
 
 void

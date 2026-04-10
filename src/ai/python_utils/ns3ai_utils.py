@@ -18,6 +18,7 @@
 #         Muyuan Shen <muyuan_shen@hust.edu.cn>
 
 import os
+import shlex
 import subprocess
 import psutil
 import time
@@ -34,23 +35,37 @@ def get_setting(setting_map):
     return ret
 
 
-def run_single_ns3(path, pname, setting=None, env=None, show_output=False):
+def run_single_simulation(path, pname, setting=None, env=None, show_output=False, waf_cmd=None):
+    """
+    Start the ns-3 simulation via waf only: ``<waf> --run "<pname> [args]"``.
+
+    :param path: Working directory prefix (typically './' after chdir to ns-3 root).
+    :param pname: Program target name (e.g. scratch ``ntn-iab-quic-dash-ai``).
+    :param waf_cmd: Override waf executable (default: env ``WAF_CMD`` or ``./waf``).
+        Use e.g. ``python3 ./waf`` if ``./waf`` fails due to missing ``python``.
+    """
     if env is None:
         env = {}
     env.update(os.environ)
     env['LD_LIBRARY_PATH'] = os.path.abspath(os.path.join(path, 'build', 'lib'))
-    # import pdb; pdb.set_trace()
-    exec_path = os.path.join(path, 'ns3')
-    if not setting:
-        cmd = '{} run {}'.format(exec_path, pname)
-    else:
-        cmd = '{} run {} --{}'.format(exec_path, pname, get_setting(setting))
+
+    waf = waf_cmd or os.environ.get('WAF_CMD', './waf')
+    # Single-path waf (e.g. ./waf) is resolved under path; commands with spaces
+    # (e.g. python3 ./waf) are used as-is for shell=True.
+    if (not os.path.isabs(waf)) and (' ' not in waf):
+        waf = os.path.join(path, waf)
+        waf = os.path.normpath(waf)
+    run_arg = pname
+    if setting:
+        run_arg += get_setting(setting)
+    cmd = '{} --run {}'.format(waf, shlex.quote(run_arg))
+
     if show_output:
-        proc = subprocess.Popen(cmd, shell=True, text=True, env=env,
-                                stdin=subprocess.PIPE,
-                                preexec_fn=os.setpgrp)
+        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, env=env,
+                                  stdin=subprocess.PIPE,
+                                  preexec_fn=os.setpgrp)
     else:
-        proc = subprocess.Popen(cmd, shell=True, text=True, env=env,
+        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, env=env,
                                 stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
@@ -59,7 +74,7 @@ def run_single_ns3(path, pname, setting=None, env=None, show_output=False):
     return cmd, proc
 
 
-# used to kill the ns-3 script process and its child processes
+# used to kill the waf/simulation process and its child processes
 def kill_proc_tree(p, timeout=None, on_terminate=None):
     print('ns3ai_utils: Killing subprocesses...')
     if isinstance(p, int):
@@ -69,10 +84,8 @@ def kill_proc_tree(p, timeout=None, on_terminate=None):
     ch = [p]+p.children(recursive=True)
     for c in ch:
         try:
-            # print("\t-- {}, pid={}, ppid={}".format(psutil.Process(c.pid).name(), c.pid, c.ppid()))
-            # print("\t   \"{}\"".format(" ".join(c.cmdline())))
             c.kill()
-        except Exception as e:
+        except Exception:
             continue
     succ, err = psutil.wait_procs(ch, timeout=timeout,
                                   callback=on_terminate)
@@ -96,21 +109,21 @@ class Experiment:
     _created = False
 
     # init ns-3 environment
-    # \param[in] memSize : share memory size
-    # \param[in] targetName : program name of ns3
-    # \param[in] path : current working directory
+    # \param[in] targetName : waf program target (e.g. ntn-iab-quic-dash-ai)
+    # \param[in] waf_cmd : optional waf command (e.g. python3 ./waf); else env WAF_CMD
     def __init__(self, targetName, ns3Path, msgModule,
                  handleFinish=False,
                  useVector=False, vectorSize=None,
-                 shmSize=4096,
+                 shmSize=65536,
                  segName="My Seg",
                  cpp2pyMsgName="My Cpp to Python Msg",
                  py2cppMsgName="My Python to Cpp Msg",
-                 lockableName="My Lockable"):
+                 lockableName="My Lockable",
+                 waf_cmd=None):
         if self._created:
             raise Exception('ns3ai_utils: Error: Experiment is singleton')
         self._created = True
-        self.targetName = targetName  # ns-3 target name, not file name
+        self.targetName = targetName  # waf target name, not file name
         os.chdir(ns3Path)
         self.msgModule = msgModule
         self.handleFinish = handleFinish
@@ -121,6 +134,7 @@ class Experiment:
         self.cpp2pyMsgName = cpp2pyMsgName
         self.py2cppMsgName = py2cppMsgName
         self.lockableName = lockableName
+        self.waf_cmd = waf_cmd
 
         self.msgInterface = msgModule.Ns3AiMsgInterfaceImpl(
             True, self.useVector, self.handleFinish,
@@ -134,25 +148,28 @@ class Experiment:
 
         self.proc = None
         self.simCmd = None
-        print('ns3ai_utils: Experiment initialized')
+        print('ns3ai_utils: Experiment initialized (waf)')
 
     def __del__(self):
         self.kill()
         del self.msgInterface
         print('ns3ai_utils: Experiment destroyed')
 
-    # run ns3 script in cmd with the setting being input
-    # \param[in] setting : ns3 script input parameters(default : None)
+    # run waf --run with the setting being input
+    # \param[in] setting : program argv-style parameters (default : None)
     # \param[in] show_output : whether to show output or not(default : False)
     def run(self, setting=None, show_output=False):
         self.kill()
-        self.simCmd, self.proc = run_single_ns3(
-            './', self.targetName, setting=setting, show_output=show_output)
-        print("ns3ai_utils: Running ns-3 with: ", self.simCmd)
+        self.simCmd, self.proc = run_single_simulation(
+            './', self.targetName, setting=setting, show_output=show_output,
+            waf_cmd=self.waf_cmd)
+        print("ns3ai_utils: Running simulation with: ", self.simCmd)
         # exit if an early error occurred, such as wrong target name
         time.sleep(SIMULATION_EARLY_ENDING)
         if not self.isalive():
             print('ns3ai_utils: Subprocess died very early')
+            print('ns3ai_utils: Hint: build the target first: ./waf build')
+            print('ns3ai_utils: Hint: if ./waf fails, try: export WAF_CMD="python3 ./waf"')
             exit(1)
         signal.signal(signal.SIGINT, sigint_handler)
         return self.msgInterface
@@ -167,4 +184,4 @@ class Experiment:
         return self.proc.poll() is None
 
 
-__all__ = ['Experiment']
+__all__ = ['Experiment', 'run_single_simulation']

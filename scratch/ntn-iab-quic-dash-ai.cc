@@ -31,6 +31,10 @@
  *                  
  */
 #include <cstdint>
+// ns3-ai (Boost IPC) must come before mmwave-helper.h, which pulls in headers that
+// define ns3::key_t and would otherwise make <sys/shm.h> key_t ambiguous.
+#include "ns3/ns3-ai-msg-interface.h"
+#include "ns3/quic-bbr-ai-msg.h"
 #include <ns3/buildings-module.h>
 #include "ns3/log.h"
 #include "ns3/mmwave-helper.h"
@@ -50,6 +54,9 @@
 #include "ns3/quic-header.h"
 #include "ns3/quic-bbr.h"
 #include "ns3/dash-module.h"
+#include "ns3/quic-socket-state-registry.h"
+#include <algorithm>
+#include <vector>
 #include <iomanip>
 #include <fstream>
 #include <sstream>
@@ -532,6 +539,136 @@ void LogTime()
   Simulator::Schedule(Seconds(0.25), &LogTime);
 }
 
+// ---- ns3-ai: periodic Cpp2Py observation publish (Python must create shared memory first) ----
+namespace {
+constexpr uint32_t g_quicBbrAiMaxConns = 32;
+constexpr uint32_t g_quicBbrAiShmSize = 65536;
+
+bool g_aiEnabled{true};
+double g_aiFirstTickDelayS{0.1};
+Time g_aiDt{MilliSeconds(50)};
+
+void
+ResetAiMetricsDtWindow(QuicSocketState::AiMetrics& m)
+{
+    m.acked_bytes_over_dt = 0;
+    m.delivered_bytes_over_dt = 0;
+    m.bytes_lost_over_dt = 0;
+    m.loss_event_count_over_dt = 0;
+    m.reordering_event_count_over_dt = 0;
+    m.dup_ack_count_over_dt = 0;
+    m.ack_interarrival_sum_s_over_dt = 0.0;
+    m.ack_interarrival_count_over_dt = 0;
+    m.ack_interarrival_min_s_over_dt = 0.0;
+    m.ack_interarrival_max_s_over_dt = 0.0;
+}
+
+void
+CopyMetricsToObs(const QuicSocketState::AiMetrics& src, QuicBbrAiConnObs& dst, double nowS, double dtS)
+{
+    dst.node_id = src.node_id;
+    dst.conn_id = src.conn_id;
+    dst.path_id = src.path_id;
+    dst.time_s = nowS;
+    dst.dt_s = dtS;
+
+    dst.bytes_in_flight_bytes = src.bytes_in_flight_bytes;
+    dst.unacked_data_bytes = src.unacked_data_bytes;
+
+    dst.smoothed_rtt_s = src.smoothed_rtt_s;
+    dst.rttvar_s = src.rttvar_s;
+    dst.latest_rtt_s = src.latest_rtt_s;
+    dst.min_rtt_s = src.min_rtt_s;
+
+    dst.acked_bytes_since_last = src.acked_bytes_since_last;
+    dst.acked_bytes_over_dt = src.acked_bytes_over_dt;
+    dst.delivered_bytes_over_dt = src.delivered_bytes_over_dt;
+    if (dtS > 0.0)
+    {
+        dst.throughput_bps_over_dt =
+            static_cast<uint64_t>((static_cast<double>(src.acked_bytes_over_dt) * 8.0) / dtS);
+    }
+    else
+    {
+        dst.throughput_bps_over_dt = 0;
+    }
+    dst.delivery_rate_bps = src.delivery_rate_bps;
+
+    dst.ack_interarrival_last_s = src.ack_interarrival_last_s;
+    if (src.ack_interarrival_count_over_dt > 0)
+    {
+        dst.ack_interarrival_mean_s_over_dt =
+            src.ack_interarrival_sum_s_over_dt / static_cast<double>(src.ack_interarrival_count_over_dt);
+    }
+    else
+    {
+        dst.ack_interarrival_mean_s_over_dt = 0.0;
+    }
+    dst.ack_interarrival_min_s_over_dt = src.ack_interarrival_min_s_over_dt;
+    dst.ack_interarrival_max_s_over_dt = src.ack_interarrival_max_s_over_dt;
+
+    dst.loss_event_count_over_dt = src.loss_event_count_over_dt;
+    dst.bytes_lost_over_dt = src.bytes_lost_over_dt;
+    dst.packet_loss_since_last = src.packet_loss_since_last;
+    dst.reordering_event_count_over_dt = src.reordering_event_count_over_dt;
+    dst.dup_ack_count_over_dt = src.dup_ack_count_over_dt;
+
+    dst.btlbw_bps = src.btlbw_bps;
+    dst.rtprop_s = src.rtprop_s;
+    dst.pacing_gain = src.pacing_gain;
+    dst.cwnd_gain = src.cwnd_gain;
+    dst.pacing_rate_bps = src.pacing_rate_bps;
+    dst.cwnd_bytes = src.cwnd_bytes;
+    dst.target_cwnd_bytes = src.target_cwnd_bytes;
+    dst.bbr_mode = src.bbr_mode;
+    dst.is_app_limited = src.is_app_limited;
+}
+
+void
+ConfigureQuicBbrAiMsgInterface()
+{
+    auto iface = Ns3AiMsgInterface::Get();
+    iface->SetIsMemoryCreator(false);
+    iface->SetUseVector(true);
+    iface->SetHandleFinish(true);
+    iface->SetMemorySize(g_quicBbrAiShmSize);
+    iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
+}
+
+void
+QuicBbrAiPeriodicStep()
+{
+    if (!g_aiEnabled)
+    {
+        return;
+    }
+    Simulator::Schedule(g_aiDt, &QuicBbrAiPeriodicStep);
+
+    auto* msgIface =
+        Ns3AiMsgInterface::Get()->GetInterface<QuicBbrAiCpp2PyMsg, QuicBbrAiPy2CppMsg>();
+    const double nowS = Simulator::Now().GetSeconds();
+    const double dtS = g_aiDt.GetSeconds();
+
+    std::vector<QuicSocketState*> tcbs = QuicSocketStateRegistry::GetActiveTcbs();
+    const uint32_t n = std::min(static_cast<uint32_t>(tcbs.size()), g_quicBbrAiMaxConns);
+
+    msgIface->CppSendBegin();
+    auto* cpp2py = msgIface->GetCpp2PyVector();
+    cpp2py->resize(n);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        Ptr<QuicSocketState> tcb = tcbs[i];
+        QuicBbrAiConnObs& dst = (*cpp2py)[i].obs;
+        CopyMetricsToObs(tcb->m_aiMetrics, dst, nowS, dtS);
+        ResetAiMetricsDtWindow(tcb->m_aiMetrics);
+    }
+    msgIface->CppSendEnd();
+
+    msgIface->CppRecvBegin();
+    // Phase 2: read GetPy2CppVector() and apply actions to QuicBbr / QuicSocketState
+    msgIface->CppRecvEnd();
+}
+} // namespace
 
 int
 main (int argc, char *argv[])
@@ -721,6 +858,16 @@ main (int argc, char *argv[])
   uint32_t rlcBufSize = 50;  // Increased from 10 to 50 MB to prevent RLC buffer overflows and packet drops
   uint32_t interPacketInterval = 10000; 
   uint32_t packetSize = 1400; //bytes // Decreased from 1500 to 1400 to avoid IP fragmentation (packet < MTU - headers)
+  double aiDtMs = 50.0;
+  cmd.AddValue("aiDtMs",
+               "ns3-ai observation period in ms (<=0 disables the shared-memory AI loop)",
+               aiDtMs);
+  cmd.AddValue("aiEnable",
+               "Enable ns3-ai QUIC BBR Cpp2Py loop (requires Python driver to create shared memory first)",
+               g_aiEnabled);
+  cmd.AddValue("aiFirstTickDelay",
+               "Seconds before first ns3-ai tick (allows Python Experiment to attach)",
+               g_aiFirstTickDelayS);
   cmd.AddValue("run", "run for RNG (for generating different deterministic sequences for different drops)", run);
   cmd.AddValue("am", "RLC AM if true", rlcAm);
   cmd.AddValue("numRelay", "Number of relays", numRelays);
@@ -1510,10 +1657,38 @@ main (int argc, char *argv[])
   NS_LOG_UNCOND("Simulation time: " << stopTime << " seconds");
   NS_LOG_UNCOND("DASH algorithm: " << algorithm);
   NS_LOG_UNCOND("Target buffering time: " << target_dt << " seconds");
-  
+
+  if (aiDtMs > 0.0)
+    {
+      g_aiDt = MilliSeconds(static_cast<uint64_t>(aiDtMs + 0.5));
+    }
+  else
+    {
+      g_aiEnabled = false;
+    }
+
+  if (g_aiEnabled)
+    {
+      NS_LOG_UNCOND("ns3-ai: enabled, dt=" << aiDtMs
+                                           << " ms, first tick delay=" << g_aiFirstTickDelayS << " s");
+      ConfigureQuicBbrAiMsgInterface();
+      Simulator::Schedule(Seconds(g_aiFirstTickDelayS), &QuicBbrAiPeriodicStep);
+    }
+  else
+    {
+      NS_LOG_UNCOND("ns3-ai: disabled (set --aiEnable=false or --aiDtMs=0 for pure C++)");
+    }
+
   Simulator::Schedule(Seconds(0.25), &LogTime);
   Simulator::Run();
-  
+
+  if (g_aiEnabled)
+    {
+      auto* msgFin =
+          Ns3AiMsgInterface::Get()->GetInterface<QuicBbrAiCpp2PyMsg, QuicBbrAiPy2CppMsg>();
+      msgFin->CppSetFinished();
+    }
+
   // Print DASH statistics for each UE (DOWNLINK: clients are on UE nodes)
   NS_LOG_UNCOND("\n========== DASH over QUIC Results (DOWNLINK) ==========");
   for (uint32_t u = 0; u < ueNodes.GetN(); ++u)

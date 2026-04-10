@@ -84,6 +84,7 @@ def build(bld):
     headers.source = [
         'model/msg-interface/ns3-ai-msg-interface.h',
         'model/msg-interface/ns3-ai-semaphore.h',
+        'examples/quic-bbr-ai/use-msg/quic-bbr-ai-msg.h',
     ]
 
     # Build the custom pybind11 module(s) under examples.

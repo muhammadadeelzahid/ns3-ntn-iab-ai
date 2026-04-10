@@ -22,6 +22,13 @@ This repository uses the **waf** build system (the classic ns-3 workflow).
 Configure and build:
 
 ```bash
+python3 ./waf configure --enable-examples
+python3 ./waf build
+```
+
+If your system already provides a `python` executable (or you installed it via something like `python-is-python3`), the following also works:
+
+```bash
 ./waf configure --enable-examples
 ./waf build
 ```
@@ -31,26 +38,27 @@ Configure and build:
 Run any of the `scratch/` programs using `--run` (examples below):
 
 ```bash
-./waf --run "ntn-iab"
+python3 ./waf --run "ntn-iab"
 ```
 
 MPEG-DASH video streaming experiments:
 
 ```bash
-./waf --run "ntn-iab-tcp-dash"
-./waf --run "ntn-iab-quic-dash"
+python3 ./waf --run "ntn-iab-tcp-dash"
+python3 ./waf --run "ntn-iab-quic-dash"
 ```
 
 You can pass program arguments after `--run`, for example:
 
 ```bash
-./waf --run "ntn-iab-quic-dash --numUes=10 --numRelay=1 --run=1"
+python3 ./waf --run "ntn-iab-quic-dash --numUes=10 --numRelay=1 --run=1"
 ```
 ## Maintainers
 
 - **Muhammad Adeel Zahid** (`adeel.m.zahid@gmail.com`)
 - **WiCoNS Research Group** (University of Manitoba): [website](https://home.cc.umanitoba.ca/~hossaina/wicons/index.html)
 - **Advancing LEO Satellite Networks and Systems Group** (University of Manitoba): [website](https://home.cc.umanitoba.ca/~hup2/ntn/)
+- **Advanced Network and Embedded Systems (ANES)** (University of Manitoba)
 
 ## License
 

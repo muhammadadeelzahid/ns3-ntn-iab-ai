@@ -23,8 +23,11 @@ struct QuicBbrAiConnObs
 {
     // Identity
     uint32_t node_id{0};
-    uint32_t conn_id{0}; // QuicL4Protocol socket index
+    /** Unused in observations (0); identity is quic_connection_id. Py2Cpp may set for legacy matchers. */
+    uint32_t conn_id{0};
     uint32_t path_id{0}; // for multipath / subflow (0 for single-path)
+    /** Same as QuicSocketBase::m_connectionId (L5/stream SetConnectionId); unique per QUIC connection. */
+    uint64_t quic_connection_id{0};
 
     // Timestamping
     double time_s{0.0};
@@ -97,6 +100,8 @@ struct QuicBbrAiPy2CppMsg
     uint32_t node_id{0};
     uint32_t conn_id{0};
     uint32_t path_id{0};
+    /** Match row by full QUIC connection id when non-zero (preferred over conn_id). */
+    uint64_t quic_connection_id{0};
 
     // Smoothing / safety (C++ uses these to apply actions gradually)
     // alpha=1.0 means "apply immediately", alpha=0.0 means "do not change".

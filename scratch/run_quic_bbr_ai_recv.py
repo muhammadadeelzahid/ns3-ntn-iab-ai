@@ -41,8 +41,9 @@ def fill_dummy_py2cpp_actions(py2cpp, cpp2py):
         obs = cpp2py[i].obs
         a = py2cpp[i]
         a.node_id = obs.node_id
-        a.conn_id = obs.conn_id
+        a.conn_id = 0
         a.path_id = obs.path_id
+        a.quic_connection_id = obs.quic_connection_id
         a.alpha = 1.0
 
         # Transport knobs (plan defaults)
@@ -130,8 +131,8 @@ def main():
                 for i in range(n):
                     o = cpp2py[i].obs
                     logging.info(
-                        '  [%d] node_id=%s conn_id=%s path_id=%s time_s=%.6f dt_s=%.6f',
-                        i, o.node_id, o.conn_id, o.path_id, o.time_s, o.dt_s,
+                        '  [%d] node_id=%s quic_connection_id=%s path_id=%s time_s=%.6f dt_s=%.6f',
+                        i, o.node_id, o.quic_connection_id, o.path_id, o.time_s, o.dt_s,
                     )
                     logging.info(
                         '      btlbw_bps=%s rtprop_s=%s pacing_gain=%s cwnd_gain=%s '
@@ -161,11 +162,12 @@ def main():
                     for j in range(len(py2cpp)):
                         d = py2cpp[j]
                         logging.debug(
-                            '  Py2Cpp[%d] node=%s conn=%s path=%s '
+                            '  Py2Cpp[%d] node=%s quic_cid=%s conn=%s path=%s '
                             'reord_th=%s/%s t_reord=%s/%s '
                             'p_gain=%s/%s cwnd_gain=%s/%s',
                             j,
                             d.node_id,
+                            d.quic_connection_id,
                             d.conn_id,
                             d.path_id,
                             d.has_reordering_threshold,

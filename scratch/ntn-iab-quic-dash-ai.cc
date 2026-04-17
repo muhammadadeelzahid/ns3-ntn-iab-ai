@@ -569,7 +569,8 @@ void
 CopyMetricsToObs(const QuicSocketState::AiMetrics& src, QuicBbrAiConnObs& dst, double nowS, double dtS)
 {
     dst.node_id = src.node_id;
-    dst.conn_id = src.conn_id;
+    dst.quic_connection_id = src.quic_connection_id;
+    dst.conn_id = 0; // do not duplicate lower 32 bits; use quic_connection_id only
     dst.path_id = src.path_id;
     dst.time_s = nowS;
     dst.dt_s = dtS;
@@ -633,6 +634,11 @@ QuicBbrAiActionMatchesTcb(const QuicSocketState& tcb, const QuicBbrAiPy2CppMsg& 
     {
         return false;
     }
+    if (a.quic_connection_id != 0 && tcb.m_aiMetrics.quic_connection_id != 0 &&
+        a.quic_connection_id != tcb.m_aiMetrics.quic_connection_id)
+    {
+        return false;
+    }
     if (a.conn_id != 0 && tcb.m_aiMetrics.conn_id != 0 && a.conn_id != tcb.m_aiMetrics.conn_id)
     {
         return false;
@@ -648,12 +654,27 @@ QuicBbrAiActionMatchesTcb(const QuicSocketState& tcb, const QuicBbrAiPy2CppMsg& 
 }
 
 void
-ApplyPy2CppTransportKnobs(Ptr<QuicSocketState> tcb, const QuicBbrAiPy2CppMsg& a)
+ApplyPy2CppTransportKnobs(Ptr<QuicSocketState> tcb, const QuicBbrAiPy2CppMsg& a, uint32_t rowIndex)
 {
     if (!tcb)
     {
         return;
     }
+
+    // DEBUG: set to 0 to apply transport knobs; 1 = log Py2Cpp only (verify shm/Python path).
+#if 0
+    NS_LOG_UNCOND("[ai Py2Cpp DEBUG] t=" << Simulator::Now().GetSeconds() << " row=" << rowIndex
+                                          << " node=" << a.node_id << " quic_cid=" << a.quic_connection_id
+                                          << " conn=" << a.conn_id << " path=" << a.path_id << " alpha=" << a.alpha
+                                          << " has_reord_th=" << (int)a.has_reordering_threshold
+                                          << " reord_th=" << a.reordering_threshold
+                                          << " max_step_reord_th=" << a.max_step_reordering_threshold
+                                          << " has_t_reord=" << (int)a.has_time_reordering_fraction
+                                          << " t_reord=" << a.time_reordering_fraction
+                                          << " max_step_t_reord=" << a.max_step_time_reordering_fraction);
+    (void)tcb;
+    return;
+#else
     double alpha = a.alpha;
     if (!std::isfinite(alpha))
     {
@@ -687,6 +708,7 @@ ApplyPy2CppTransportKnobs(Ptr<QuicSocketState> tcb, const QuicBbrAiPy2CppMsg& a)
         const double next = (1.0 - alpha) * cur + alpha * stepped;
         tcb->m_kTimeReorderingFraction = std::max(1.0, std::min(2.0, next));
     }
+#endif
 }
 
 void
@@ -698,6 +720,22 @@ ConfigureQuicBbrAiMsgInterface()
     iface->SetHandleFinish(true);
     iface->SetMemorySize(g_quicBbrAiShmSize);
     iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
+}
+
+/** Single choke point: only TCBs whose parent QUIC socket lives on the DASH server node. */
+bool
+QuicBbrAiIncludeTcbForShm(QuicSocketState* tcb)
+{
+    if (!tcb)
+    {
+        return false;
+    }
+    Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
+    if (!sock)
+    {
+        return false;
+    }
+    return sock->GetNode()->GetId() == g_quicServerNodeId;
 }
 
 void
@@ -714,7 +752,16 @@ QuicBbrAiPeriodicStep()
     const double nowS = Simulator::Now().GetSeconds();
     const double dtS = g_aiDt.GetSeconds();
 
-    std::vector<QuicSocketState*> tcbs = QuicSocketStateRegistry::GetActiveTcbs();
+    std::vector<QuicSocketState*> active = QuicSocketStateRegistry::GetActiveTcbs();
+    std::vector<QuicSocketState*> tcbs;
+    tcbs.reserve(active.size());
+    for (QuicSocketState* tcb : active)
+    {
+        if (QuicBbrAiIncludeTcbForShm(tcb))
+        {
+            tcbs.push_back(tcb);
+        }
+    }
     const uint32_t n = std::min(static_cast<uint32_t>(tcbs.size()), g_quicBbrAiMaxConns);
 
     msgIface->CppSendBegin();
@@ -742,7 +789,7 @@ QuicBbrAiPeriodicStep()
         {
             continue;
         }
-        ApplyPy2CppTransportKnobs(tcb, act);
+        ApplyPy2CppTransportKnobs(tcb, act, i);
         Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
         if (!sock)
         {
@@ -773,6 +820,24 @@ QuicBbrAiPeriodicStep()
         {
             continue;
         }
+        // DEBUG: set to 0 to apply BBR AI controls; 1 = log Py2Cpp only (verify shm/Python path).
+#if 0
+        NS_LOG_UNCOND("[ai Py2Cpp DEBUG] t=" << Simulator::Now().GetSeconds() << " row=" << i
+                                             << " node=" << act.node_id << " quic_cid=" << act.quic_connection_id
+                                             << " conn=" << act.conn_id << " path=" << act.path_id << " alpha=" << act.alpha
+                                             << " has_p_gain=" << (int)act.has_target_pacing_gain
+                                             << " p_gain=" << act.target_pacing_gain
+                                             << " max_step_p_gain=" << act.max_step_pacing_gain
+                                             << " has_cwnd_gain=" << (int)act.has_target_cwnd_gain
+                                             << " cwnd_gain=" << act.target_cwnd_gain
+                                             << " max_step_cwnd_gain=" << act.max_step_cwnd_gain
+                                             << " has_p_cap=" << (int)act.has_pacing_rate_cap_bps
+                                             << " p_cap_bps=" << act.pacing_rate_cap_bps
+                                             << " has_cwnd_cap=" << (int)act.has_cwnd_cap_bytes
+                                             << " cwnd_cap_bytes=" << act.cwnd_cap_bytes);
+        (void)bbr;
+        (void)tcb;
+#else
         bbr->ApplyAiSafeControls(tcb,
                                  static_cast<bool>(act.has_target_pacing_gain),
                                  act.target_pacing_gain,
@@ -785,8 +850,25 @@ QuicBbrAiPeriodicStep()
                                  act.pacing_rate_cap_bps,
                                  static_cast<bool>(act.has_cwnd_cap_bytes),
                                  act.cwnd_cap_bytes);
+#endif
     }
     msgIface->CppRecvEnd();
+
+    // Metrics hygiene: server rows published above had their dt-window fields cleared. Client TCBs
+    // are not in the SHM vector but still accumulate *_over_dt in m_aiMetrics — reset them here so
+    // counters stay per-AI-interval if anything reads them. Server TCBs beyond g_quicBbrAiMaxConns
+    // are also reset (they were not copied this tick).
+    for (QuicSocketState* tcb : active)
+    {
+        if (!QuicBbrAiIncludeTcbForShm(tcb))
+        {
+            ResetAiMetricsDtWindow(tcb->m_aiMetrics);
+        }
+    }
+    for (uint32_t i = n; i < static_cast<uint32_t>(tcbs.size()); ++i)
+    {
+        ResetAiMetricsDtWindow(tcbs[i]->m_aiMetrics);
+    }
 }
 } // namespace
 
@@ -1241,7 +1323,8 @@ main (int argc, char *argv[])
   NodeContainer remoteHostContainer;
   remoteHostContainer.Create (1);
   Ptr<Node> remoteHost = remoteHostContainer.Get (0);
-  
+  g_quicServerNodeId = remoteHost->GetId();
+
   // Install QUIC stack on remote host (instead of Internet stack)
   QuicHelper quicHelper;
 
@@ -1790,7 +1873,8 @@ main (int argc, char *argv[])
   if (g_aiEnabled)
     {
       NS_LOG_UNCOND("ns3-ai: enabled, dt=" << aiDtMs
-                                           << " ms, first tick delay=" << g_aiFirstTickDelayS << " s");
+                                           << " ms, first tick delay=" << g_aiFirstTickDelayS << " s"
+                                           << ", server TCB filter node_id=" << g_quicServerNodeId);
       ConfigureQuicBbrAiMsgInterface();
       Simulator::Schedule(Seconds(g_aiFirstTickDelayS), &QuicBbrAiPeriodicStep);
     }

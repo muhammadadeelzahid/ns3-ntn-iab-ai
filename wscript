@@ -754,6 +754,9 @@ def add_scratch_programs(bld):
         for filename in os.listdir("scratch"):
             if filename.startswith('.') or filename == 'CVS':
                 continue
+            # Python bytecode dirs (e.g. scratch runners) are not scratch programs
+            if filename == '__pycache__':
+                continue
             if os.path.isdir(os.path.join("scratch", filename)):
                 obj = bld.create_ns3_program(filename, all_modules)
                 obj.path = obj.path.find_dir('scratch').find_dir(filename)

@@ -1,0 +1,24 @@
+## -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
+
+import os
+
+def build(bld):
+    # Build a pybind11-based Python extension module.
+    mod = bld(features='cxx cxxshlib pyext')
+    mod.target = 'ns3ai_abr_dash_ai_py'
+    mod.source = ['abr_dash_ai_py.cc']
+
+    # Include paths:
+    mod.includes = [
+        '#',  # project root (src/* includes)
+        bld.bldnode.abspath(),  # build dir (build/ns3/* installed headers)
+        '.',
+        bld.path.find_node('../../../model/msg-interface').abspath(),
+    ]
+
+    # pybind11 include flags discovered at configure time
+    if bld.env.PYBIND11_INCLUDES:
+        mod.env.append_value('INCLUDES', bld.env.PYBIND11_INCLUDES)
+
+    # Link with libpthread/rt if needed (generally safe for shared memory + semaphores)
+    mod.env.append_value('LIB', ['pthread', 'rt'])

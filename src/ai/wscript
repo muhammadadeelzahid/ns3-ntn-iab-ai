@@ -1,0 +1,92 @@
+## -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
+
+import os
+import shlex
+import subprocess
+
+
+def _pybind11_includes(conf):
+    """
+    Discover pybind11 include directories by calling:
+      python -m pybind11 --includes
+    and return a list of include paths (without the -I prefix).
+    """
+    py = conf.env['PYTHON'][0] if 'PYTHON' in conf.env and conf.env['PYTHON'] else 'python3'
+    try:
+        out = subprocess.check_output([py, '-m', 'pybind11', '--includes'])
+        out = out.decode('utf-8').strip()
+    except Exception:
+        return []
+
+    # output format example: "-I/usr/include/python3.11 -I/usr/local/include/python3.11 -I.../pybind11/include"
+    parts = shlex.split(out)
+    incs = []
+    for p in parts:
+        if p.startswith('-I'):
+            incs.append(p[2:])
+    return incs
+
+
+def options(opt):
+    opt.load('python')
+    opt.add_option('--with-pybind11',
+                   help=('Path to pybind11 headers (directory that contains pybind11/pybind11.h). '
+                         'Use this on HPC if "python -m pybind11 --includes" is unavailable.'),
+                   default=None,
+                   dest='with_pybind11',
+                   type='string')
+
+
+def configure(conf):
+    # Ensure Python extension build environment is available.
+    conf.load('python')
+    conf.check_python_headers()
+
+    # pybind11 headers are required for the custom extension modules.
+    #
+    # HPC-friendly behavior:
+    # - Prefer an explicit path via --with-pybind11 or PYBIND11_INCLUDE_DIR
+    # - Otherwise, try "python -m pybind11 --includes" (works if pybind11 is installed in that python)
+    # - If still missing, keep going (so normal ns-3 builds work), but the AI pyext module will fail to build
+    pybind11_inc = None
+    if getattr(conf.options, 'with_pybind11', None):
+        pybind11_inc = conf.options.with_pybind11
+    elif os.environ.get('PYBIND11_INCLUDE_DIR'):
+        pybind11_inc = os.environ.get('PYBIND11_INCLUDE_DIR')
+
+    if pybind11_inc:
+        conf.env.PYBIND11_INCLUDES = [pybind11_inc]
+        conf.msg('Checking for pybind11 includes (--with-pybind11/PYBIND11_INCLUDE_DIR)', pybind11_inc)
+    else:
+        conf.env.PYBIND11_INCLUDES = _pybind11_includes(conf)
+        conf.msg('Checking for pybind11 includes (python -m pybind11 --includes)',
+                 'found' if conf.env.PYBIND11_INCLUDES else 'not found')
+
+
+def build(bld):
+    # Register the ns-3 'ai' module so dependencies like 'ns3-ai' resolve.
+    # This creates a waf task generator named 'ns3-ai'.
+    #
+    # The msg-interface headers are header-only templates; gym-interface has .cc code.
+    module = bld.create_ns3_module('ai', [
+        'core',
+        'network',
+        'internet',
+    ])
+
+    # Keep this module minimal for now: message-interface is header-only and
+    # does not require protobuf generation (unlike gym-interface).
+    module.source = []
+
+    # Public headers (so <ns3/ai-module.h> and related includes work)
+    headers = bld(features='ns3header')
+    headers.module = 'ai'
+    headers.source = [
+        'model/msg-interface/ns3-ai-msg-interface.h',
+        'model/msg-interface/ns3-ai-semaphore.h',
+        'examples/abr-dash-ai/use-msg/abr-dash-ai-msg.h',
+    ]
+
+    # Build the custom pybind11 module(s) under examples.
+    bld.recurse('examples/abr-dash-ai')
+

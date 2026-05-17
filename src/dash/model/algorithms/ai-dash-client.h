@@ -1,3 +1,15 @@
+/*
+ * ai-dash-client.h
+ *
+ * Application-layer DASH ABR client that exchanges state and bitrate decisions
+ * with an external Python process via ns3-ai shared-memory IPC.
+ *
+ * Author: Muhammad Adeel Zahid <zahidma@myumanitoba.ca>
+ *         University of Manitoba
+ *
+ * Added: AiDashClient — application-layer ABR via ns3-ai shared memory.
+ */
+
 #ifndef AI_DASH_CLIENT_H
 #define AI_DASH_CLIENT_H
 
@@ -8,9 +20,9 @@ namespace ns3 {
 /**
  * \ingroup dash
  * \brief ABR algorithm that uses an external AI/LLM model via ns3-ai shared memory.
- * 
- * This client blocks simulation execution during CalcNextSegment to wait for a 
- * bitrate decision from the connected Python process.
+ *
+ * On each segment request, publishes AbrDashCpp2PyMsg to Python and blocks until
+ * AbrDashPy2CppMsg (chosen bitrate and optional delay) is received.
  */
 class AiDashClient : public DashClient
 {

@@ -58,7 +58,6 @@ class QuicL5Protocol;
 class QuicL4Protocol;
 class MpQuicPathManager;
 class MpQuicScheduler;
-class QuicSocketBase;
 
 /**
  * \brief Data structure that records the congestion state of a connection
@@ -135,78 +134,6 @@ public:
                                                                 marked asdelivered was first sent */
   uint32_t              m_lastAckedSackedBytes {0};         //!< Size of data sacked in the last ack
   uint32_t              m_ackBytesSent    {0};              //!< amount of ACK-only bytes sent
-
-  /**
-   * \brief Metrics cache attached to the TCB
-   *
-   * This cache is updated from:
-   * - QuicSocketBase: ACK/loss timing, acked bytes, deliveryRate, RTT fields (via QuicSocketState)
-   * - QuicBbr: BBR model fields (btlbw/rtprop/gains/target cwnd/mode)
-   *
-   * The periodic publisher (scheduler) can snapshot these fields without relying on traces.
-   */
-  struct AiMetrics
-  {
-    // Identity (filled opportunistically by writers)
-    uint32_t node_id{0};
-    uint32_t conn_id{0}; // optional: SocketList index if known by publisher; otherwise 0
-    uint32_t path_id{0};
-    uint64_t quic_connection_id{0}; // QuicSocketBase::m_connectionId if needed
-
-    // Timebase
-    double time_s{0.0};
-    double dt_s{0.0};
-
-    // Inflight / unacked
-    uint64_t bytes_in_flight_bytes{0};
-    uint64_t unacked_data_bytes{0};
-
-    // RTT signals (copied from TCB fields)
-    double latest_rtt_s{0.0};
-    double smoothed_rtt_s{0.0};
-    double rttvar_s{0.0};
-    double min_rtt_s{0.0};
-
-    // Delivery / ACK
-    uint64_t delivery_rate_bps{0};
-    uint32_t packet_loss_since_last{0};
-    uint8_t is_app_limited{0};
-
-    uint64_t acked_bytes_since_last{0};
-
-    // dt-aggregates
-    uint64_t acked_bytes_over_dt{0};
-    uint64_t delivered_bytes_over_dt{0};
-    uint64_t bytes_lost_over_dt{0};
-    uint32_t loss_event_count_over_dt{0};
-    uint32_t reordering_event_count_over_dt{0};
-    uint32_t dup_ack_count_over_dt{0};
-
-    // ACK inter-arrival
-    double ack_interarrival_last_s{0.0};
-    double ack_interarrival_sum_s_over_dt{0.0};
-    uint32_t ack_interarrival_count_over_dt{0};
-    double ack_interarrival_min_s_over_dt{0.0};
-    double ack_interarrival_max_s_over_dt{0.0};
-
-    // BBR model (filled by QuicBbr)
-    uint64_t btlbw_bps{0};
-    double rtprop_s{0.0};
-    double pacing_gain{0.0};
-    double cwnd_gain{0.0};
-    uint64_t pacing_rate_bps{0};
-    uint64_t cwnd_bytes{0};
-    uint64_t target_cwnd_bytes{0};
-    uint8_t bbr_mode{0}; // 0..3
-  } m_aiMetrics;
-
-  /**
-   * Owning QUIC socket for this subflow TCB (non-owning raw ptr to avoid ref cycles).
-   * Cleared in MpQuicSubFlow destructor.
-   */
-  QuicSocketBase* m_parentSocket{nullptr};
-  void SetParentSocket (Ptr<QuicSocketBase> socket);
-  Ptr<QuicSocketBase> GetParentSocket () const;
 
   //For OLIA use
   uint32_t m_bytesBeforeLost1;
@@ -317,11 +244,6 @@ public:
    * \param algo Algorithm to be installed
    */
   void SetCongestionControlAlgorithm (Ptr<TcpCongestionOps> algo);
-
-  /**
-   * \return installed congestion-ops (e.g. QuicBbr), or null before install
-   */
-  Ptr<TcpCongestionOps> GetCongestionControlAlgorithm () const;
 
   /**
    * \brief Common part of the two Bind(), i.e. set callback to receive data

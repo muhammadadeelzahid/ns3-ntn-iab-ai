@@ -503,23 +503,10 @@ QuicSocketState::QuicSocketState (const QuicSocketState &other)
       other.m_kDelayedAckTimeout),
     m_kDefaultInitialRtt (
       other.m_kDefaultInitialRtt),
-    m_kMaxPacketsReceivedBeforeAckSend (other.m_kMaxPacketsReceivedBeforeAckSend),
-    m_parentSocket (other.m_parentSocket)
+    m_kMaxPacketsReceivedBeforeAckSend (other.m_kMaxPacketsReceivedBeforeAckSend)
 {
   m_initialCWnd = 10 * m_segmentSize;
   m_lossDetectionAlarm.Cancel ();
-}
-
-void
-QuicSocketState::SetParentSocket (Ptr<QuicSocketBase> socket)
-{
-  m_parentSocket = socket ? PeekPointer (socket) : nullptr;
-}
-
-Ptr<QuicSocketBase>
-QuicSocketState::GetParentSocket () const
-{
-  return m_parentSocket ? Ptr<QuicSocketBase> (m_parentSocket) : nullptr;
 }
 
 QuicSocketBase::QuicSocketBase (void)
@@ -1560,14 +1547,6 @@ QuicSocketBase::DoRetransmit (std::vector<Ptr<QuicSocketTxItem> > lostPackets, u
     m_packetLossTrace (lostPkt->m_packetNumber.GetValue (), 
                        lostPkt->m_packet->GetSize (), 
                        pathId);
-
-    // Metrics cache update: loss event + bytes lost over dt
-    if (pathId < m_subflows.size() && m_subflows[pathId]->m_tcb)
-      {
-        auto& m = m_subflows[pathId]->m_tcb->m_aiMetrics;
-        m.loss_event_count_over_dt += 1;
-        m.bytes_lost_over_dt += lostPkt->m_packet->GetSize ();
-      }
   }
 
   // Send the retransmitted data
@@ -2443,69 +2422,6 @@ QuicSocketBase::OnReceivedAckFrame (QuicSubheader &sub)
   m_txBuffer->GenerateRateSample (m_subflows[pathId]->m_tcb);
   rs->m_packetLoss = std::abs ((int) lostOut - (int) m_txBuffer->GetLost (pathId));
   m_subflows[pathId]->m_tcb->m_lastAckedSackedBytes = m_subflows[pathId]->m_tcb->m_delivered - delivered;
-
-  // --------------------------------------------------------------------------
-  // Metrics cache update: ACK/loss/RTT/delivery metrics in TCB cache
-  // --------------------------------------------------------------------------
-  {
-    Ptr<QuicSocketState> tcb = m_subflows[pathId]->m_tcb;
-    auto& m = tcb->m_aiMetrics;
-    m.path_id = pathId;
-    m.quic_connection_id = m_connectionId;
-    if (m_node)
-      {
-        m.node_id = m_node->GetId ();
-      }
-    m.time_s = Simulator::Now ().GetSeconds ();
-    m.bytes_in_flight_bytes = tcb->m_bytesInFlight.Get ();
-    m.unacked_data_bytes = m.bytes_in_flight_bytes; // start with inflight; can extend later
-
-    // RTT fields live on the TCB already (updated by congestion ops UpdateRtt)
-    m.latest_rtt_s = tcb->m_latestRtt.GetSeconds ();
-    m.smoothed_rtt_s = tcb->m_smoothedRtt.GetSeconds ();
-    m.rttvar_s = tcb->m_rttVar.GetSeconds ();
-    m.min_rtt_s = tcb->m_minRtt.GetSeconds ();
-
-    // Delivery rate sample and packet loss signal
-    m.delivery_rate_bps = rs->m_deliveryRate.GetBitRate ();
-    m.packet_loss_since_last = rs->m_packetLoss;
-    m.is_app_limited = rs->m_isAppLimited ? 1 : 0;
-
-    m.acked_bytes_since_last = ackedBytes;
-    m.acked_bytes_over_dt += ackedBytes;
-    m.delivered_bytes_over_dt += tcb->m_lastAckedSackedBytes;
-
-    // ACK inter-arrival (best-effort; assumes each call corresponds to an incoming ACK frame)
-    const double now_s = m.time_s;
-    if (lastAckTime != Seconds (0))
-      {
-        const double delta_s = (Simulator::Now () - lastAckTime).GetSeconds ();
-        m.ack_interarrival_last_s = delta_s;
-        m.ack_interarrival_sum_s_over_dt += delta_s;
-        m.ack_interarrival_count_over_dt += 1;
-        if (m.ack_interarrival_min_s_over_dt == 0.0 || delta_s < m.ack_interarrival_min_s_over_dt)
-          {
-            m.ack_interarrival_min_s_over_dt = delta_s;
-          }
-        if (delta_s > m.ack_interarrival_max_s_over_dt)
-          {
-            m.ack_interarrival_max_s_over_dt = delta_s;
-          }
-      }
-    lastAckTime = Simulator::Now ();
-
-    // Simple dup-ack heuristic: no progress in largest acked
-    if (ackedBytes == 0 && tcb->m_lastAckedSeq.GetValue () == largestAcknowledged)
-      {
-        m.dup_ack_count_over_dt += 1;
-      }
-
-    // Reordering heuristic: gaps/blocks present
-    if (!gaps.empty ())
-      {
-        m.reordering_event_count_over_dt += 1;
-      }
-  }
   // RTO packet acknowledged - IETF Draft QUIC Recovery, Sec. 4.3.3
   if (m_subflows[pathId]->m_tcb->m_rtoCount > 0)
     {
@@ -3285,12 +3201,6 @@ QuicSocketBase::SetCongestionControlAlgorithm (Ptr<TcpCongestionOps> algo)
       m_quicCongestionControlLegacy = true;
     }
   m_congestionControl = algo;
-}
-
-Ptr<TcpCongestionOps>
-QuicSocketBase::GetCongestionControlAlgorithm () const
-{
-  return m_congestionControl;
 }
 
 void

@@ -1,3 +1,16 @@
+#!/usr/bin/env python3
+"""
+DASH ABR orchestrator: runs ntn-iab-quic-dash-ai with ns3::AiDashClient and
+exchanges AbrDash state/actions over ns3-ai shared memory (FDASH heuristic in Python).
+
+Author: Muhammad Adeel Zahid <adeel.m.zahid@gmail.com>
+        University of Manitoba
+
+Added: Python orchestrator for ns3::AiDashClient (FDASH heuristic over AbrDash IPC).
+
+Run from repository root: python3 scratch/run_ai_dash_heuristic.py
+"""
+
 import sys
 import os
 import time

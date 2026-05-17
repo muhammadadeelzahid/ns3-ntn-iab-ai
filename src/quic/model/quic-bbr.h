@@ -116,24 +116,6 @@ public:
   virtual void IncreaseWindow (Ptr<TcpSocketState> tcb,
                                uint32_t segmentsAcked);
   virtual Ptr<TcpCongestionOps> Fork ();
-
-  /**
-   * Apply AI pacing/cwnd targets with EMA + per-dt step limits and optional rate/cwnd caps.
-   * Safe to call on the simulation timestep; bypasses SetPacingRate monotonic rule when
-   * recomputing from current BBR bandwidth estimate.
-   */
-  void ApplyAiSafeControls (Ptr<QuicSocketState> tcb,
-                            bool hasPacingGain,
-                            double targetPacingGain,
-                            double maxStepPacing,
-                            bool hasCwndGain,
-                            double targetCwndGain,
-                            double maxStepCwnd,
-                            double alphaIn,
-                            bool hasPacingCap,
-                            uint64_t pacingCapBps,
-                            bool hasCwndCap,
-                            uint64_t cwndCapBytes);
   
   /**
    * \brief Unused function, added here to avoid overloading the one in TcpCongestionOps

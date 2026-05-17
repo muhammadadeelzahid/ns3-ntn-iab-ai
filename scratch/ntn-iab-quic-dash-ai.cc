@@ -27,14 +27,15 @@
  *
  *   Modified by:
  *              Muhammad Adeel Zahid <zahidma@myumanitoba.ca>
- *                 Integrating NTNs & Multilayer support with IAB with MPEG-DASH video streaming with quic derived from signetlabdei/ns3-mmwave-iab, Mattia Sandri/ns3-ntn, signetlabdei/ns3-mmwave-hbf, signetlabdei/quic-ns-3 and ssjShirley/mpquic-ns3
- *                  
+ *                 NTN/IAB mmWave simulation with MPEG-DASH over QUIC; application-layer
+ *                 ns3-ai ABR integration (AiDashClient + AbrDash shared-memory IPC).
+ *                 Derived from signetlabdei/ns3-mmwave-iab, Mattia Sandri/ns3-ntn,
+ *                 signetlabdei/ns3-mmwave-hbf, signetlabdei/quic-ns-3, ssjShirley/mpquic-ns3.
  */
 #include <cstdint>
 // ns3-ai (Boost IPC) must come before mmwave-helper.h, which pulls in headers that
 // define ns3::key_t and would otherwise make <sys/shm.h> key_t ambiguous.
 #include "ns3/ns3-ai-msg-interface.h"
-#include "ns3/quic-bbr-ai-msg.h"
 #include "ns3/abr-dash-ai-msg.h"
 #include "ns3/ai-dash-client.h"
 #include <ns3/buildings-module.h>
@@ -56,7 +57,6 @@
 #include "ns3/quic-header.h"
 #include "ns3/quic-bbr.h"
 #include "ns3/dash-module.h"
-#include "ns3/quic-socket-state-registry.h"
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
@@ -543,334 +543,19 @@ void LogTime()
   Simulator::Schedule(Seconds(0.25), &LogTime);
 }
 
-// ---- ns3-ai: periodic Cpp2Py observation publish (Python must create shared memory first) ----
+// ---- ns3-ai: DASH ABR shared-memory IPC (Python must create shared memory first) ----
 namespace {
-constexpr uint32_t g_quicBbrAiMaxConns = 32;
-constexpr uint32_t g_quicBbrAiShmSize = 65536;
-
-bool g_aiEnabled{true};
-double g_aiFirstTickDelayS{0.1};
-Time g_aiDt{MilliSeconds(50)};
+bool g_dashAiEnabled{true};
 
 void
-ResetAiMetricsDtWindow(QuicSocketState::AiMetrics& m)
-{
-    m.acked_bytes_over_dt = 0;
-    m.delivered_bytes_over_dt = 0;
-    m.bytes_lost_over_dt = 0;
-    m.loss_event_count_over_dt = 0;
-    m.reordering_event_count_over_dt = 0;
-    m.dup_ack_count_over_dt = 0;
-    m.ack_interarrival_sum_s_over_dt = 0.0;
-    m.ack_interarrival_count_over_dt = 0;
-    m.ack_interarrival_min_s_over_dt = 0.0;
-    m.ack_interarrival_max_s_over_dt = 0.0;
-}
-
-void
-CopyMetricsToObs(const QuicSocketState::AiMetrics& src, QuicBbrAiConnObs& dst, double nowS, double dtS)
-{
-    dst.node_id = src.node_id;
-    dst.quic_connection_id = src.quic_connection_id;
-    dst.conn_id = 0; // do not duplicate lower 32 bits; use quic_connection_id only
-    dst.path_id = src.path_id;
-    dst.time_s = nowS;
-    dst.dt_s = dtS;
-
-    dst.bytes_in_flight_bytes = src.bytes_in_flight_bytes;
-    dst.unacked_data_bytes = src.unacked_data_bytes;
-
-    dst.smoothed_rtt_s = src.smoothed_rtt_s;
-    dst.rttvar_s = src.rttvar_s;
-    dst.latest_rtt_s = src.latest_rtt_s;
-    dst.min_rtt_s = src.min_rtt_s;
-
-    dst.acked_bytes_since_last = src.acked_bytes_since_last;
-    dst.acked_bytes_over_dt = src.acked_bytes_over_dt;
-    dst.delivered_bytes_over_dt = src.delivered_bytes_over_dt;
-    if (dtS > 0.0)
-    {
-        dst.throughput_bps_over_dt =
-            static_cast<uint64_t>((static_cast<double>(src.acked_bytes_over_dt) * 8.0) / dtS);
-    }
-    else
-    {
-        dst.throughput_bps_over_dt = 0;
-    }
-    dst.delivery_rate_bps = src.delivery_rate_bps;
-
-    dst.ack_interarrival_last_s = src.ack_interarrival_last_s;
-    if (src.ack_interarrival_count_over_dt > 0)
-    {
-        dst.ack_interarrival_mean_s_over_dt =
-            src.ack_interarrival_sum_s_over_dt / static_cast<double>(src.ack_interarrival_count_over_dt);
-    }
-    else
-    {
-        dst.ack_interarrival_mean_s_over_dt = 0.0;
-    }
-    dst.ack_interarrival_min_s_over_dt = src.ack_interarrival_min_s_over_dt;
-    dst.ack_interarrival_max_s_over_dt = src.ack_interarrival_max_s_over_dt;
-
-    dst.loss_event_count_over_dt = src.loss_event_count_over_dt;
-    dst.bytes_lost_over_dt = src.bytes_lost_over_dt;
-    dst.packet_loss_since_last = src.packet_loss_since_last;
-    dst.reordering_event_count_over_dt = src.reordering_event_count_over_dt;
-    dst.dup_ack_count_over_dt = src.dup_ack_count_over_dt;
-
-    dst.btlbw_bps = src.btlbw_bps;
-    dst.rtprop_s = src.rtprop_s;
-    dst.pacing_gain = src.pacing_gain;
-    dst.cwnd_gain = src.cwnd_gain;
-    dst.pacing_rate_bps = src.pacing_rate_bps;
-    dst.cwnd_bytes = src.cwnd_bytes;
-    dst.target_cwnd_bytes = src.target_cwnd_bytes;
-    dst.bbr_mode = src.bbr_mode;
-    dst.is_app_limited = src.is_app_limited;
-}
-
-bool
-QuicBbrAiActionMatchesTcb(const QuicSocketState& tcb, const QuicBbrAiPy2CppMsg& a)
-{
-    if (a.node_id != 0 && tcb.m_aiMetrics.node_id != 0 && a.node_id != tcb.m_aiMetrics.node_id)
-    {
-        return false;
-    }
-    if (a.quic_connection_id != 0 && tcb.m_aiMetrics.quic_connection_id != 0 &&
-        a.quic_connection_id != tcb.m_aiMetrics.quic_connection_id)
-    {
-        return false;
-    }
-    if (a.conn_id != 0 && tcb.m_aiMetrics.conn_id != 0 && a.conn_id != tcb.m_aiMetrics.conn_id)
-    {
-        return false;
-    }
-    if (a.path_id != tcb.m_aiMetrics.path_id)
-    {
-        if (a.path_id != 0 || tcb.m_aiMetrics.path_id != 0)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-void
-ApplyPy2CppTransportKnobs(Ptr<QuicSocketState> tcb, const QuicBbrAiPy2CppMsg& a, uint32_t rowIndex)
-{
-    if (!tcb)
-    {
-        return;
-    }
-
-    // DEBUG: set to 0 to apply transport knobs; 1 = log Py2Cpp only (verify shm/Python path).
-#if 0
-    NS_LOG_UNCOND("[ai Py2Cpp DEBUG] t=" << Simulator::Now().GetSeconds() << " row=" << rowIndex
-                                          << " node=" << a.node_id << " quic_cid=" << a.quic_connection_id
-                                          << " conn=" << a.conn_id << " path=" << a.path_id << " alpha=" << a.alpha
-                                          << " has_reord_th=" << (int)a.has_reordering_threshold
-                                          << " reord_th=" << a.reordering_threshold
-                                          << " max_step_reord_th=" << a.max_step_reordering_threshold
-                                          << " has_t_reord=" << (int)a.has_time_reordering_fraction
-                                          << " t_reord=" << a.time_reordering_fraction
-                                          << " max_step_t_reord=" << a.max_step_time_reordering_fraction);
-    (void)tcb;
-    return;
-#else
-    double alpha = a.alpha;
-    if (!std::isfinite(alpha))
-    {
-        alpha = 1.0;
-    }
-    alpha = std::max(0.0, std::min(1.0, alpha));
-
-    if (a.has_reordering_threshold)
-    {
-        const uint32_t cur = tcb->m_kReorderingThreshold;
-        const uint32_t tgt = a.reordering_threshold;
-        const uint32_t ms =
-            a.max_step_reordering_threshold ? a.max_step_reordering_threshold : 1u;
-        const int64_t d = static_cast<int64_t>(tgt) - static_cast<int64_t>(cur);
-        const int64_t s =
-            std::max(-static_cast<int64_t>(ms), std::min(static_cast<int64_t>(ms), d));
-        const double stepped = static_cast<double>(cur) + static_cast<double>(s);
-        const double next = (1.0 - alpha) * static_cast<double>(cur) + alpha * stepped;
-        tcb->m_kReorderingThreshold =
-            static_cast<uint32_t>(std::lround(std::max(1.0, std::min(256.0, next))));
-    }
-    if (a.has_time_reordering_fraction)
-    {
-        double cur = tcb->m_kTimeReorderingFraction;
-        double tgt = a.time_reordering_fraction;
-        const double ms = (a.max_step_time_reordering_fraction > 0.0 &&
-                           std::isfinite(a.max_step_time_reordering_fraction))
-                              ? a.max_step_time_reordering_fraction
-                              : 0.05;
-        const double stepped = cur + std::max(-ms, std::min(ms, tgt - cur));
-        const double next = (1.0 - alpha) * cur + alpha * stepped;
-        tcb->m_kTimeReorderingFraction = std::max(1.0, std::min(2.0, next));
-    }
-#endif
-}
-
-void
-ConfigureAiMsgInterface()
+ConfigureDashAiMsgInterface()
 {
     auto iface = Ns3AiMsgInterface::Get();
     iface->SetIsMemoryCreator(false);
-    iface->SetUseVector(false); // ABR is one decision at a time (struct mode)
+    iface->SetUseVector(false); // one ABR decision per segment (struct mode)
     iface->SetHandleFinish(true);
     iface->SetMemorySize(4096);
     iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
-}
-
-/** Single choke point: only TCBs whose parent QUIC socket lives on the DASH server node. */
-bool
-QuicBbrAiIncludeTcbForShm(QuicSocketState* tcb)
-{
-    if (!tcb)
-    {
-        return false;
-    }
-    Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
-    if (!sock)
-    {
-        return false;
-    }
-    return sock->GetNode()->GetId() == g_quicServerNodeId;
-}
-
-void
-QuicBbrAiPeriodicStep()
-{
-    if (!g_aiEnabled)
-    {
-        return;
-    }
-    Simulator::Schedule(g_aiDt, &QuicBbrAiPeriodicStep);
-
-    auto* msgIface =
-        Ns3AiMsgInterface::Get()->GetInterface<QuicBbrAiCpp2PyMsg, QuicBbrAiPy2CppMsg>();
-    const double nowS = Simulator::Now().GetSeconds();
-    const double dtS = g_aiDt.GetSeconds();
-
-    std::vector<QuicSocketState*> active = QuicSocketStateRegistry::GetActiveTcbs();
-    std::vector<QuicSocketState*> tcbs;
-    tcbs.reserve(active.size());
-    for (QuicSocketState* tcb : active)
-    {
-        if (QuicBbrAiIncludeTcbForShm(tcb))
-        {
-            tcbs.push_back(tcb);
-        }
-    }
-    const uint32_t n = std::min(static_cast<uint32_t>(tcbs.size()), g_quicBbrAiMaxConns);
-
-    msgIface->CppSendBegin();
-    auto* cpp2py = msgIface->GetCpp2PyVector();
-    cpp2py->resize(n);
-    for (uint32_t i = 0; i < n; ++i)
-    {
-        Ptr<QuicSocketState> tcb = tcbs[i];
-        QuicBbrAiConnObs& dst = (*cpp2py)[i].obs;
-        CopyMetricsToObs(tcb->m_aiMetrics, dst, nowS, dtS);
-        ResetAiMetricsDtWindow(tcb->m_aiMetrics);
-    }
-    msgIface->CppSendEnd();
-
-    msgIface->CppRecvBegin();
-    auto* py2cpp = msgIface->GetPy2CppVector();
-    const uint32_t m = std::min(n, static_cast<uint32_t>(py2cpp->size()));
-
-    std::unordered_map<void*, uint32_t> firstRowForSocket;
-    for (uint32_t i = 0; i < m; ++i)
-    {
-        Ptr<QuicSocketState> tcb = tcbs[i];
-        const QuicBbrAiPy2CppMsg& act = (*py2cpp)[i];
-        if (!QuicBbrAiActionMatchesTcb(*tcb, act))
-        {
-            continue;
-        }
-        ApplyPy2CppTransportKnobs(tcb, act, i);
-        Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
-        if (!sock)
-        {
-            continue;
-        }
-        void* sk = PeekPointer(sock);
-        if (firstRowForSocket.find(sk) == firstRowForSocket.end())
-        {
-            firstRowForSocket[sk] = i;
-        }
-    }
-    for (const auto& kv : firstRowForSocket)
-    {
-        const uint32_t i = kv.second;
-        Ptr<QuicSocketState> tcb = tcbs[i];
-        const QuicBbrAiPy2CppMsg& act = (*py2cpp)[i];
-        if (!QuicBbrAiActionMatchesTcb(*tcb, act))
-        {
-            continue;
-        }
-        Ptr<QuicSocketBase> sock = tcb->GetParentSocket();
-        if (!sock)
-        {
-            continue;
-        }
-        Ptr<QuicBbr> bbr = DynamicCast<QuicBbr>(sock->GetCongestionControlAlgorithm());
-        if (!bbr)
-        {
-            continue;
-        }
-        // DEBUG: set to 0 to apply BBR AI controls; 1 = log Py2Cpp only (verify shm/Python path).
-#if 0
-        NS_LOG_UNCOND("[ai Py2Cpp DEBUG] t=" << Simulator::Now().GetSeconds() << " row=" << i
-                                             << " node=" << act.node_id << " quic_cid=" << act.quic_connection_id
-                                             << " conn=" << act.conn_id << " path=" << act.path_id << " alpha=" << act.alpha
-                                             << " has_p_gain=" << (int)act.has_target_pacing_gain
-                                             << " p_gain=" << act.target_pacing_gain
-                                             << " max_step_p_gain=" << act.max_step_pacing_gain
-                                             << " has_cwnd_gain=" << (int)act.has_target_cwnd_gain
-                                             << " cwnd_gain=" << act.target_cwnd_gain
-                                             << " max_step_cwnd_gain=" << act.max_step_cwnd_gain
-                                             << " has_p_cap=" << (int)act.has_pacing_rate_cap_bps
-                                             << " p_cap_bps=" << act.pacing_rate_cap_bps
-                                             << " has_cwnd_cap=" << (int)act.has_cwnd_cap_bytes
-                                             << " cwnd_cap_bytes=" << act.cwnd_cap_bytes);
-        (void)bbr;
-        (void)tcb;
-#else
-        bbr->ApplyAiSafeControls(tcb,
-                                 static_cast<bool>(act.has_target_pacing_gain),
-                                 act.target_pacing_gain,
-                                 act.max_step_pacing_gain,
-                                 static_cast<bool>(act.has_target_cwnd_gain),
-                                 act.target_cwnd_gain,
-                                 act.max_step_cwnd_gain,
-                                 act.alpha,
-                                 static_cast<bool>(act.has_pacing_rate_cap_bps),
-                                 act.pacing_rate_cap_bps,
-                                 static_cast<bool>(act.has_cwnd_cap_bytes),
-                                 act.cwnd_cap_bytes);
-#endif
-    }
-    msgIface->CppRecvEnd();
-
-    // Metrics hygiene: server rows published above had their dt-window fields cleared. Client TCBs
-    // are not in the SHM vector but still accumulate *_over_dt in m_aiMetrics — reset them here so
-    // counters stay per-AI-interval if anything reads them. Server TCBs beyond g_quicBbrAiMaxConns
-    // are also reset (they were not copied this tick).
-    for (QuicSocketState* tcb : active)
-    {
-        if (!QuicBbrAiIncludeTcbForShm(tcb))
-        {
-            ResetAiMetricsDtWindow(tcb->m_aiMetrics);
-        }
-    }
-    for (uint32_t i = n; i < static_cast<uint32_t>(tcbs.size()); ++i)
-    {
-        ResetAiMetricsDtWindow(tcbs[i]->m_aiMetrics);
-    }
 }
 } // namespace
 
@@ -1063,17 +748,10 @@ main (int argc, char *argv[])
   uint32_t rlcBufSize = 50;  // Increased from 10 to 50 MB to prevent RLC buffer overflows and packet drops
   uint32_t interPacketInterval = 10000; 
   uint32_t packetSize = 1400; //bytes // Decreased from 1500 to 1400 to avoid IP fragmentation (packet < MTU - headers)
-  double aiDtMs = 50.0;
-  cmd.AddValue("aiDtMs",
-               "ns3-ai observation period in ms (<=0 disables the shared-memory AI loop)",
-               aiDtMs);
   cmd.AddValue("aiEnable",
-               "Enable ns3-ai QUIC BBR Cpp2Py loop (requires Python driver to create shared memory first)",
-               g_aiEnabled);
+               "Enable ns3-ai DASH ABR shared-memory IPC (requires Python driver to create shared memory first)",
+               g_dashAiEnabled);
   cmd.AddValue("algorithm", "DASH adaptation algorithm (e.g. ns3::FdashClient or ns3::AiDashClient)", algorithm);
-  cmd.AddValue("aiFirstTickDelay",
-               "Seconds before first ns3-ai tick (allows Python Experiment to attach)",
-               g_aiFirstTickDelayS);
   cmd.AddValue("run", "run for RNG (for generating different deterministic sequences for different drops)", run);
   cmd.AddValue("am", "RLC AM if true", rlcAm);
   cmd.AddValue("numRelay", "Number of relays", numRelays);
@@ -1865,34 +1543,23 @@ main (int argc, char *argv[])
   NS_LOG_UNCOND("DASH algorithm: " << algorithm);
   NS_LOG_UNCOND("Target buffering time: " << target_dt << " seconds");
 
-  if (aiDtMs > 0.0)
+  if (g_dashAiEnabled)
     {
-      g_aiDt = MilliSeconds(static_cast<uint64_t>(aiDtMs + 0.5));
+      NS_LOG_UNCOND("ns3-ai: DASH ABR IPC enabled (struct mode, 4096-byte shared memory)");
+      ConfigureDashAiMsgInterface();
     }
   else
     {
-      g_aiEnabled = false;
-    }
-
-  if (g_aiEnabled)
-    {
-      NS_LOG_UNCOND("ns3-ai: enabled, dt=" << aiDtMs
-                                           << " ms, first tick delay=" << g_aiFirstTickDelayS << " s"
-                                           << ", server TCB filter node_id=" << g_quicServerNodeId);
-      ConfigureAiMsgInterface();
-    }
-  else
-    {
-      NS_LOG_UNCOND("ns3-ai: disabled (set --aiEnable=false or --aiDtMs=0 for pure C++)");
+      NS_LOG_UNCOND("ns3-ai: disabled (set --aiEnable=false for pure C++ DASH)");
     }
 
   Simulator::Schedule(Seconds(0.25), &LogTime);
   Simulator::Run();
 
-  if (g_aiEnabled)
+  if (g_dashAiEnabled)
     {
       auto* msgFin =
-          Ns3AiMsgInterface::Get()->GetInterface<QuicBbrAiCpp2PyMsg, QuicBbrAiPy2CppMsg>();
+          Ns3AiMsgInterface::Get()->GetInterface<AbrDashCpp2PyMsg, AbrDashPy2CppMsg>();
       msgFin->CppSetFinished();
     }
 

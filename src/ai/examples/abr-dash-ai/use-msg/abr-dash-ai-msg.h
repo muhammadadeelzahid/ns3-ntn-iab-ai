@@ -1,11 +1,22 @@
+/*
+ * abr-dash-ai-msg.h
+ *
+ * Shared-memory message structs for application-layer DASH ABR over ns3-ai.
+ * Used by AiDashClient (C++) and the Python orchestrator (e.g. run_ai_dash_heuristic.py).
+ *
+ * Author: Muhammad Adeel Zahid <zahidma@myumanitoba.ca>
+ *         University of Manitoba
+ *
+ * Added: shared-memory structs for DASH ABR state and Python bitrate decisions.
+ */
+
 #ifndef NS3AI_ABR_DASH_AI_MSG_H
 #define NS3AI_ABR_DASH_AI_MSG_H
 
 #include <cstdint>
 
 /**
- * C++ -> Python message type for ABR DASH AI.
- * Contains the current network state, buffer status, and playback info.
+ * C++ -> Python message: DASH player and network state for one ABR decision.
  */
 struct AbrDashCpp2PyMsg {
     // Identity
@@ -30,8 +41,7 @@ struct AbrDashCpp2PyMsg {
 };
 
 /**
- * Python -> C++ message type for ABR DASH AI.
- * Contains the bitrate decision from the LLM.
+ * Python -> C++ message: bitrate decision (and optional inter-request delay).
  */
 struct AbrDashPy2CppMsg {
     uint32_t chosen_bitrate_bps{0};     // Bitrate decision from LLM

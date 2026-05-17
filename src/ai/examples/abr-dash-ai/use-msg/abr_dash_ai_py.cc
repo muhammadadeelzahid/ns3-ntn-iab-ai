@@ -1,3 +1,14 @@
+/*
+ * abr_dash_ai_py.cc
+ *
+ * pybind11 bindings for AbrDashCpp2PyMsg / AbrDashPy2CppMsg and Ns3AiMsgInterfaceImpl.
+ *
+ * Author: Muhammad Adeel Zahid <zahidma@myumanitoba.ca>
+ *         University of Manitoba
+ *
+ * Added: pybind11 bindings for AbrDash message structs and Ns3AiMsgInterfaceImpl.
+ */
+
 #include "abr-dash-ai-msg.h"
 #include "ns3-ai-msg-interface.h"
 

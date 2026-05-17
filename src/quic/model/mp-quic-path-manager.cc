@@ -92,7 +92,6 @@ MpQuicPathManager::InitialSubflow0 (Address localAddress, Address peerAddress)
   NS_ASSERT_MSG (ok == true, "Failed connection to SSTHR0 trace");
   ok = sFlow->m_tcb->TraceConnectWithoutContext ("RTT", MakeCallback (&QuicSocketBase::TraceRTT0, m_socket));
   NS_ASSERT_MSG (ok == true, "Failed connection to RTT0 trace");
-  sFlow->m_tcb->SetParentSocket (m_socket);
   return sFlow;
 
 }
@@ -115,7 +114,6 @@ MpQuicPathManager::AddSubflow(Address localAddress, Address peerAddress, uint8_t
   m_socket->SubflowInsert(sFlow);
   m_socket->AddPath(localAddress, peerAddress, pathId);
   m_socket->SendAddAddress(localAddress, pathId);
-  sFlow->m_tcb->SetParentSocket (m_socket);
   
   return sFlow;
 
@@ -144,7 +142,6 @@ MpQuicPathManager::AddSubflowWithPeerAddress(Address localAddress, Address peerA
   NS_ASSERT_MSG (ok == true, "Failed connection to SSTHR1 trace");
   ok = sFlow->m_tcb->TraceConnectWithoutContext ("RTT", MakeCallback (&QuicSocketBase::TraceRTT1, m_socket));
   NS_ASSERT_MSG (ok == true, "Failed connection to RTT1 trace");
-  sFlow->m_tcb->SetParentSocket (m_socket);
   return sFlow;
 }
 

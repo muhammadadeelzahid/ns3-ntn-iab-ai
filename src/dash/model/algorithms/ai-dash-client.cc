@@ -1,3 +1,15 @@
+/*
+ * ai-dash-client.cc
+ *
+ * Implements AiDashClient::CalcNextSegment using ns3-ai struct-mode IPC
+ * (AbrDashCpp2PyMsg / AbrDashPy2CppMsg).
+ *
+ * Author: Muhammad Adeel Zahid <zahidma@myumanitoba.ca>
+ *         University of Manitoba
+ *
+ * Added: CalcNextSegment IPC with AbrDashCpp2PyMsg / AbrDashPy2CppMsg.
+ */
+
 #include "ai-dash-client.h"
 #include "ns3/log.h"
 #include "ns3/simulator.h"

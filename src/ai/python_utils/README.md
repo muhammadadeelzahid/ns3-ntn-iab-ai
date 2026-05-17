@@ -32,16 +32,16 @@ python3 scratch/run_smoke_test.py
 
 The scratch runners use a fixed layout: repo root is the parent of `scratch/` (where `./waf` lives).
 
-Uses `--aiDtMs=0` so the C++ ns3-ai tick is off (no Python recv loop required). If `python` is not on `PATH`, the script sets `WAF_CMD=python3 ./waf` automatically.
+Uses `--aiEnable=false` with native `ns3::FdashClient` so no Python ABR loop is required. If `python` is not on `PATH`, the script sets `WAF_CMD=python3 ./waf` automatically.
 
-The runner in `scratch/` adds `src/ai/python_utils` and `src/ai/examples/quic-bbr-ai/use-msg` (pybind `.so`) to `sys.path`, so you do not need manual `PYTHONPATH` for those when using the standard layout.
+The runner in `scratch/` adds `src/ai/python_utils` and `build/src/ai/examples/abr-dash-ai/use-msg` (pybind `.so`) to `sys.path`, so you do not need manual `PYTHONPATH` for those when using the standard layout.
 
-## Recv loop (Phase 1 logging)
+## DASH ABR orchestrator
 
 From the repository root:
 
 ```bash
-python3 scratch/run_quic_bbr_ai_recv.py
+python3 scratch/run_ai_dash_heuristic.py
 ```
 
-It launches the scratch program `ntn-iab-quic-dash-ai` with `aiDtMs>0`, then loops `PyRecvBegin` → log `GetCpp2PyVector()` → `PyRecvEnd` → `PySendBegin`/`PySendEnd` without writing actions. The pybind module is still built under `src/ai/examples/quic-bbr-ai/use-msg/`; the scratch runner adds that directory to `sys.path` automatically.
+It launches `ntn-iab-quic-dash-ai` with `ns3::AiDashClient`, then loops on shared-memory ABR state/actions (`AbrDashCpp2PyMsg` / `AbrDashPy2CppMsg`) until the simulation finishes.

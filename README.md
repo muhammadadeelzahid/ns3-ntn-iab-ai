@@ -53,6 +53,23 @@ You can pass program arguments after `--run`, for example:
 ```bash
 python3 ./waf --run "ntn-iab-quic-dash --numUes=10 --numRelay=1 --run=1"
 ```
+
+### DASH ABR with ns3-ai (application layer)
+
+Python-controlled adaptive bitrate for QUIC-DASH (`ntn-iab-quic-dash-ai`, `ns3::AiDashClient`):
+
+```bash
+python3 ./waf configure --enable-examples
+python3 ./waf build
+python3 scratch/run_ai_dash_heuristic.py
+```
+
+Native C++ baseline (no shared-memory IPC):
+
+```bash
+python3 ./waf --run "ntn-iab-quic-dash-ai --aiEnable=false --numUes=1 --run=1 --algorithm=ns3::FdashClient"
+```
+
 ## Maintainers
 
 - **Muhammad Adeel Zahid** (`adeel.m.zahid@gmail.com`)

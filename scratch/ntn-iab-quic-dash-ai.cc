@@ -35,6 +35,8 @@
 // define ns3::key_t and would otherwise make <sys/shm.h> key_t ambiguous.
 #include "ns3/ns3-ai-msg-interface.h"
 #include "ns3/quic-bbr-ai-msg.h"
+#include "ns3/abr-dash-ai-msg.h"
+#include "ns3/ai-dash-client.h"
 #include <ns3/buildings-module.h>
 #include "ns3/log.h"
 #include "ns3/mmwave-helper.h"
@@ -712,13 +714,13 @@ ApplyPy2CppTransportKnobs(Ptr<QuicSocketState> tcb, const QuicBbrAiPy2CppMsg& a,
 }
 
 void
-ConfigureQuicBbrAiMsgInterface()
+ConfigureAiMsgInterface()
 {
     auto iface = Ns3AiMsgInterface::Get();
     iface->SetIsMemoryCreator(false);
-    iface->SetUseVector(true);
+    iface->SetUseVector(false); // ABR is one decision at a time (struct mode)
     iface->SetHandleFinish(true);
-    iface->SetMemorySize(g_quicBbrAiShmSize);
+    iface->SetMemorySize(4096);
     iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
 }
 
@@ -1057,6 +1059,7 @@ main (int argc, char *argv[])
   bool rlcAm = false;
   uint32_t numRelays = 1;
   uint32_t numUes = 10;  // Number of UE nodes/users
+  std::string algorithm = "ns3::FdashClient"; // DASH adaptation algorithm
   uint32_t rlcBufSize = 50;  // Increased from 10 to 50 MB to prevent RLC buffer overflows and packet drops
   uint32_t interPacketInterval = 10000; 
   uint32_t packetSize = 1400; //bytes // Decreased from 1500 to 1400 to avoid IP fragmentation (packet < MTU - headers)
@@ -1067,6 +1070,7 @@ main (int argc, char *argv[])
   cmd.AddValue("aiEnable",
                "Enable ns3-ai QUIC BBR Cpp2Py loop (requires Python driver to create shared memory first)",
                g_aiEnabled);
+  cmd.AddValue("algorithm", "DASH adaptation algorithm (e.g. ns3::FdashClient or ns3::AiDashClient)", algorithm);
   cmd.AddValue("aiFirstTickDelay",
                "Seconds before first ns3-ai tick (allows Python Experiment to attach)",
                g_aiFirstTickDelayS);
@@ -1401,7 +1405,7 @@ main (int argc, char *argv[])
   // double minSimulationDuration = desiredVideoDuration*1.15;
   
   // Get current stopTime (line 1024)
-  double desiredVideoDuration = 60.0;
+  double desiredVideoDuration = 90.0;
   double stopTime = desiredVideoDuration;  // Minimal time for testing
   
   // // Check if current stopTime is less than minimum, and adjust if needed
@@ -1652,7 +1656,7 @@ main (int argc, char *argv[])
 
   double window = 50;  // Throughput measurement window in milliseconds (increased from 10ms to 50ms for more stable measurements and smoother adaptation)
 
-  std::string algorithm = "ns3::FdashClient";  // DASH adaptation algorithm
+  // DASH adaptation algorithm is now parsed from command line: algorithm
   
 
 
@@ -1875,8 +1879,7 @@ main (int argc, char *argv[])
       NS_LOG_UNCOND("ns3-ai: enabled, dt=" << aiDtMs
                                            << " ms, first tick delay=" << g_aiFirstTickDelayS << " s"
                                            << ", server TCB filter node_id=" << g_quicServerNodeId);
-      ConfigureQuicBbrAiMsgInterface();
-      Simulator::Schedule(Seconds(g_aiFirstTickDelayS), &QuicBbrAiPeriodicStep);
+      ConfigureAiMsgInterface();
     }
   else
     {

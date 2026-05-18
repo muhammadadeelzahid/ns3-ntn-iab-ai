@@ -38,6 +38,15 @@ struct AbrDashCpp2PyMsg {
     int32_t  player_state{0};           // 0=initial_buffering, 1=playing, 2=paused, 3=done
     double   interruption_time_s{0.0};    // Total stall time so far
     uint32_t interruptions{0};          // Total stall count
+
+    // Extended ABR state (v2)
+    double   smoothed_rtt_ms{-1.0};     // RTT (ms) if available, -1 when unavailable
+    double   loss_rate_recent{-1.0};    // Recent loss/retransmission ratio, -1 when unavailable
+    double   throughput_ema_bps{0.0};   // Smoothed throughput estimate
+    double   throughput_std_bps{0.0};   // Throughput volatility over recent window
+    double   download_time_ratio{0.0};  // segment_fetch_time_s / segment_duration_s
+    double   last_decision_delay_s{0.0}; // Previous action delay from Python
+    uint32_t bitrate_switch_count_recent{0}; // Number of switches in recent action window
 };
 
 /**

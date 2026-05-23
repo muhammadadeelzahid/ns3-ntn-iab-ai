@@ -21,6 +21,7 @@
 #ifndef DASH_CLIENT_H
 #define DASH_CLIENT_H
 
+#include "dash-metadata.h"
 #include "http-parser.h"
 #include "mpeg-player.h"
 
@@ -28,6 +29,8 @@
 #include "ns3/ptr.h"
 #include "ns3/socket.h"
 #include "ns3/traced-callback.h"
+
+#include <string>
 
 namespace ns3
 {
@@ -109,10 +112,8 @@ class DashClient : public Application
 
     double GetSegmentFetchTime();
 
-    std::vector<uint32_t> rates = {45000,    89000,    131000,   178000,  221000,  263000,  334000,
-                                   396000,   522000,   595000,   791000,  1033000, 1245000, 1547000,
-                                   2134000,  2484000,  3079000,  3527000, 3840000, 4220000, 9500000,
-                                   15000000, 30000000, 66000000, 85000000};
+    // 6-rung ladder aligned with metadata representations (250k .. 12000k).
+    std::vector<uint32_t> rates = {250000, 750000, 1500000, 3000000, 6000000, 12000000};
 
     uint32_t m_bufferSpace;
     MpegPlayer m_player; // The MpegPlayer object
@@ -199,6 +200,9 @@ class DashClient : public Application
     EventId m_periodicBufferCheckTimer; // Timer for periodic buffer check when player is paused
     Time m_maxVideoDuration;  // Maximum video duration - stops requesting segments after this time
     uint32_t m_maxSegments;   // Maximum number of segments to request (calculated from m_maxVideoDuration using frame duration)
+    std::string m_metadataCsvPath;
+    DashMetadataIndex m_metadataIndex;
+    bool m_metadataReady;
 };
 
 } // namespace ns3

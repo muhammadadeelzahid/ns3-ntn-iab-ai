@@ -87,10 +87,11 @@ def fdash_heuristic(state):
 
     result = output * m_bitrateEstimate
     
-    rates = [45000, 89000, 131000, 178000, 221000, 263000, 334000,
-             396000, 522000, 595000, 791000, 1033000, 1245000, 1547000,
-             2134000, 2484000, 3079000, 3527000, 3840000, 4220000, 9500000,
-             15000000, 30000000, 66000000, 85000000]
+    try:
+        from ai_llm.paths import NS3_RATE_LADDER_BPS
+    except ImportError:
+        NS3_RATE_LADDER_BPS = [250_000, 750_000, 1_500_000, 3_000_000, 6_000_000, 12_000_000]
+    rates = list(NS3_RATE_LADDER_BPS)
     
     m_interruptionLimit = rates[-1]
     if result > m_interruptionLimit:

@@ -26,6 +26,7 @@
 #include <ns3/inet6-socket-address.h>
 #include <ns3/log.h>
 #include <ns3/simulator.h>
+#include <ns3/string.h>
 #include <ns3/tcp-socket-factory.h>
 #include <ns3/uinteger.h>
 #include <sstream>
@@ -80,6 +81,11 @@ DashClient::GetTypeId(void)
                                           TimeValue(Seconds(0)),  // 0 = unlimited
                                           MakeTimeAccessor(&DashClient::m_maxVideoDuration),
                                           MakeTimeChecker())
+                            .AddAttribute("MetadataCsvPath",
+                                          "Path to metadata CSV for segment count alignment.",
+                                          StringValue(""),
+                                          MakeStringAccessor(&DashClient::m_metadataCsvPath),
+                                          MakeStringChecker())
                             .AddTraceSource("Tx",
                                             "A new packet is created and is sent",
                                             MakeTraceSourceAccessor(&DashClient::m_txTrace),
@@ -107,7 +113,7 @@ DashClient::DashClient()
       m_id(m_countObjs++),
       m_requestTime("0s"),
       m_segment_bytes(0),
-      m_bitRate(45000),
+      m_bitRate(250000),
       m_window(Seconds(10)),
       m_segmentFetchTime(Seconds(0)),
       m_keepAliveTimer(),
@@ -115,7 +121,8 @@ DashClient::DashClient()
       m_segmentWatchdogTimer(),
       m_periodicBufferCheckTimer(),
       m_maxVideoDuration(Seconds(0)),
-      m_maxSegments(0)
+      m_maxSegments(0),
+      m_metadataReady(false)
 {
     NS_LOG_FUNCTION(this);
     m_parser.SetApp(this); // So the parser knows where to send the received messages
@@ -161,7 +168,24 @@ DashClient::StartApplication(void) // Called at time specified by Start
 
         m_started = Simulator::Now();
 
-        if (m_maxVideoDuration.GetSeconds() > 0)
+        if (!m_metadataReady && !m_metadataCsvPath.empty())
+        {
+            std::string error;
+            if (m_metadataIndex.Load(m_metadataCsvPath, &error))
+            {
+                m_metadataReady = true;
+                m_maxSegments = m_metadataIndex.GetSegmentCount();
+                NS_LOG_UNCOND("DashClient " << m_id << " loaded metadata CSV: " << m_metadataCsvPath
+                              << " segment_limit=" << m_maxSegments);
+            }
+            else
+            {
+                NS_LOG_WARN("DashClient " << m_id << " metadata load failed (" << error
+                             << "). Falling back to MaxVideoDuration behavior.");
+            }
+        }
+
+        if (!m_metadataReady && m_maxVideoDuration.GetSeconds() > 0)
         {
             double frameDurationSeconds = MPEG_TIME_BETWEEN_FRAMES / 1000.0;  // Convert ms to seconds
             double segmentDurationSeconds = (1.0 * MPEG_FRAMES_PER_SEGMENT * frameDurationSeconds);
@@ -173,7 +197,7 @@ DashClient::StartApplication(void) // Called at time specified by Start
             NS_LOG_INFO("Maximum video duration: " << m_maxVideoDuration.GetSeconds() << "s, segmentsNeeded: " << segmentsNeeded);
             NS_LOG_DEBUG("Frame duration: " << frameDurationSeconds << "s, segment duration: " << segmentDurationSeconds << "s, total frames: " << totalFrames);
         }
-        else
+        else if (!m_metadataReady)
         {
             m_maxSegments = 0;  // Unlimited
         }

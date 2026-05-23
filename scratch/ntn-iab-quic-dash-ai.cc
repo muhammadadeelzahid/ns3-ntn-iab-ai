@@ -745,6 +745,8 @@ main (int argc, char *argv[])
   uint32_t numRelays = 1;
   uint32_t numUes = 10;  // Number of UE nodes/users
   std::string algorithm = "ns3::FdashClient"; // DASH adaptation algorithm
+  std::string dashMetadataCsv = "../abr/output/metadata/hiking_segments.csv";
+  std::string dashMetadataTrace = "";
   uint32_t rlcBufSize = 50;  // Increased from 10 to 50 MB to prevent RLC buffer overflows and packet drops
   uint32_t interPacketInterval = 10000; 
   uint32_t packetSize = 1400; //bytes // Decreased from 1500 to 1400 to avoid IP fragmentation (packet < MTU - headers)
@@ -752,6 +754,10 @@ main (int argc, char *argv[])
                "Enable ns3-ai DASH ABR shared-memory IPC (requires Python driver to create shared memory first)",
                g_dashAiEnabled);
   cmd.AddValue("algorithm", "DASH adaptation algorithm (e.g. ns3::FdashClient or ns3::AiDashClient)", algorithm);
+  cmd.AddValue("dashMetadataCsv", "Path to DASH segment metadata CSV (size_bytes_* columns).", dashMetadataCsv);
+  cmd.AddValue("dashMetadataTrace",
+               "Optional CSV trace of per-segment server payload (source=metadata|synthetic|reject_invalid).",
+               dashMetadataTrace);
   cmd.AddValue("run", "run for RNG (for generating different deterministic sequences for different drops)", run);
   cmd.AddValue("am", "RLC AM if true", rlcAm);
   cmd.AddValue("numRelay", "Number of relays", numRelays);
@@ -1341,6 +1347,16 @@ main (int argc, char *argv[])
   // Create a DASH server on each UE (listening on port 80)
   DashServerHelper dashServer ("ns3::QuicSocketFactory",
                                 InetSocketAddress(Ipv4Address::GetAny(), 80));
+  dashServer.SetAttribute("MetadataCsvPath", StringValue(dashMetadataCsv));
+  if (!dashMetadataTrace.empty())
+    {
+      dashServer.SetAttribute("MetadataTracePath", StringValue(dashMetadataTrace));
+    }
+  else if (!dashMetadataCsv.empty())
+    {
+      dashMetadataTrace = "dash_metadata_segments.csv";
+      dashServer.SetAttribute("MetadataTracePath", StringValue(dashMetadataTrace));
+    }
   serverApps.Add (dashServer.Install (remoteHost));
   NS_LOG_UNCOND("DASH Server installed on remoteHost (IP=" << remoteHostAddr << ") port 80");
   
@@ -1352,6 +1368,7 @@ main (int argc, char *argv[])
                                   InetSocketAddress(remoteHostAddr, 80),
                                   algorithm);
     dashClient.SetAttribute ("VideoId", UintegerValue(u + 1));
+    dashClient.SetAttribute ("MetadataCsvPath", StringValue(dashMetadataCsv));
     dashClient.SetAttribute ("TargetDt", TimeValue(Seconds(target_dt)));
     dashClient.SetAttribute ("window", TimeValue(MilliSeconds(window)));
     dashClient.SetAttribute ("bufferSpace", UintegerValue(bufferSpace));
@@ -1541,6 +1558,8 @@ main (int argc, char *argv[])
   NS_LOG_UNCOND("Number of UEs: " << ueNodes.GetN());
   NS_LOG_UNCOND("Simulation time: " << stopTime << " seconds");
   NS_LOG_UNCOND("DASH algorithm: " << algorithm);
+  NS_LOG_UNCOND("DASH metadata CSV: " << (dashMetadataCsv.empty() ? "(none, synthetic sizes)" : dashMetadataCsv));
+  NS_LOG_UNCOND("DASH metadata trace: " << (dashMetadataTrace.empty() ? "(disabled)" : dashMetadataTrace));
   NS_LOG_UNCOND("Target buffering time: " << target_dt << " seconds");
 
   if (g_dashAiEnabled)

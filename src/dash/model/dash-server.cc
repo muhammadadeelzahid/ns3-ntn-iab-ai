@@ -35,12 +35,30 @@
 #include "ns3/simulator.h"
 #include "ns3/socket-factory.h"
 #include "ns3/socket.h"
+#include "ns3/string.h"
 #include "ns3/tcp-socket-factory.h"
 #include "ns3/trace-source-accessor.h"
 #include "ns3/udp-socket.h"
 #include <ns3/double.h>
 #include <ns3/random-variable-stream.h>
 #include <ns3/tcp-socket.h>
+
+namespace
+{
+bool
+IsLadderBitrate(uint32_t bitrateBps)
+{
+    static const uint32_t ladder[] = {250000, 750000, 1500000, 3000000, 6000000, 12000000};
+    for (uint32_t rate : ladder)
+    {
+        if (rate == bitrateBps)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
 
 namespace ns3
 {
@@ -63,6 +81,16 @@ DashServer::GetTypeId(void)
                                           TypeIdValue(TcpSocketFactory::GetTypeId()),
                                           MakeTypeIdAccessor(&DashServer::m_tid),
                                           MakeTypeIdChecker())
+                            .AddAttribute("MetadataCsvPath",
+                                          "Path to metadata CSV with size_bytes_* columns.",
+                                          StringValue(""),
+                                          MakeStringAccessor(&DashServer::m_metadataCsvPath),
+                                          MakeStringChecker())
+                            .AddAttribute("MetadataTracePath",
+                                          "Optional CSV trace of per-segment payload source/size.",
+                                          StringValue(""),
+                                          MakeStringAccessor(&DashServer::m_metadataTracePath),
+                                          MakeStringChecker())
                             .AddTraceSource("Rx",
                                             "A packet has been received",
                                             MakeTraceSourceAccessor(&DashServer::m_rxTrace),
@@ -72,7 +100,9 @@ DashServer::GetTypeId(void)
 
 DashServer::DashServer()
     : m_socket(0),
-      m_totalRx(0)
+      m_totalRx(0),
+      m_metadataReady(false),
+      m_metadataTraceHeaderWritten(false)
 {
     NS_LOG_FUNCTION(this);
 }
@@ -114,6 +144,31 @@ void
 DashServer::StartApplication() // Called at time specified by Start
 {
     NS_LOG_FUNCTION(this);
+    if (!m_metadataReady && !m_metadataCsvPath.empty())
+    {
+        std::string error;
+        if (m_metadataIndex.Load(m_metadataCsvPath, &error))
+        {
+            m_metadataReady = true;
+            NS_LOG_UNCOND("DashServer loaded metadata CSV: " << m_metadataCsvPath
+                          << " segments=" << m_metadataIndex.GetSegmentCount());
+        }
+        else
+        {
+            NS_LOG_WARN("DashServer metadata load failed (" << error
+                         << "). Falling back to legacy synthetic segment sizes.");
+        }
+    }
+    else if (m_metadataCsvPath.empty())
+    {
+        NS_LOG_UNCOND("DashServer metadata CSV path is empty; using synthetic segment sizes.");
+    }
+
+    if (!m_metadataTracePath.empty())
+    {
+        NS_LOG_UNCOND("DashServer metadata trace enabled: " << m_metadataTracePath);
+    }
+
     // Create the socket if not already
     if (!m_socket)
     {
@@ -200,6 +255,7 @@ DashServer::HandleRead(Ptr<Socket> socket)
                 break;
             }
             
+            const uint32_t pendingBefore = pendingPacket->GetSize();
             uint32_t removed = pendingPacket->RemoveHeader(header);
             if (removed != httpHeaderSize)
             {
@@ -209,13 +265,36 @@ DashServer::HandleRead(Ptr<Socket> socket)
                 pendingPacket = nullptr;
                 break;
             }
-            
-            if (header.GetMessageType() == HTTP_REQUEST)
+
+            const uint32_t msgType = header.GetMessageType();
+            const uint32_t videoId = header.GetVideoId();
+            const uint32_t resolution = header.GetResolution();
+            const uint32_t segmentId = header.GetSegmentId();
+            const bool isRequest = (msgType == HTTP_REQUEST);
+
+            if (isRequest)
             {
-                SendSegment(header.GetVideoId(),
-                            header.GetResolution(),
-                            header.GetSegmentId(),
-                            socket);
+                const uint32_t maxSegmentId =
+                    m_metadataReady ? m_metadataIndex.GetSegmentCount() : 10000;
+                const bool validRequest = (videoId > 0) && (videoId <= 1024) &&
+                                          IsLadderBitrate(resolution) &&
+                                          (segmentId < maxSegmentId);
+                if (!validRequest)
+                {
+                    NS_LOG_WARN("DashServer rejecting invalid HTTP_REQUEST: videoId="
+                                << videoId << " resolution=" << resolution
+                                << " segmentId=" << segmentId
+                                << " pendingBytes=" << pendingBefore);
+                    WriteMetadataTrace(videoId,
+                                       segmentId,
+                                       resolution,
+                                       0,
+                                       0,
+                                       "reject_invalid");
+                    pendingPacket = nullptr;
+                    break;
+                }
+                SendSegment(videoId, resolution, segmentId, socket);
             }
         }
 
@@ -350,20 +429,61 @@ DashServer::DataSend(Ptr<Socket> socket, uint32_t)
 
 
 void
+DashServer::WriteMetadataTrace(uint32_t videoId,
+                               uint32_t segmentId,
+                               uint32_t bitrateBps,
+                               uint32_t targetBytes,
+                               uint32_t totalBytes,
+                               const char* source)
+{
+    if (m_metadataTracePath.empty())
+    {
+        return;
+    }
+
+    std::ofstream trace(m_metadataTracePath.c_str(), std::ios::app);
+    if (!trace.is_open())
+    {
+        NS_LOG_WARN("DashServer could not open metadata trace file: " << m_metadataTracePath);
+        return;
+    }
+
+    if (!m_metadataTraceHeaderWritten)
+    {
+        trace << "sim_time_s,video_id,segment_id,bitrate_bps,target_bytes,total_bytes,source\n";
+        m_metadataTraceHeaderWritten = true;
+    }
+
+    trace << Simulator::Now().GetSeconds() << ","
+          << videoId << ","
+          << segmentId << ","
+          << bitrateBps << ","
+          << targetBytes << ","
+          << totalBytes << ","
+          << source
+          << "\n";
+}
+
+void
 DashServer::SendSegment(uint32_t video_id,
                         uint32_t resolution,
                         uint32_t segment_id,
                         Ptr<Socket> socket)
 {
     NS_LOG_DEBUG("Generating Segment " << segment_id << " for Video " << video_id << ". Socket " << socket);
+    uint32_t targetSegmentBytes = 0;
+    bool metadataHit = false;
+    if (m_metadataReady)
+    {
+        metadataHit = m_metadataIndex.GetSegmentSizeBytes(segment_id, resolution, targetSegmentBytes);
+    }
+
+    uint32_t total_segment_bytes = 0;
     int fps = 1000 / MPEG_TIME_BETWEEN_FRAMES;
     int avg_packetsize = resolution / (fps * 8);
-
     HTTPHeader http_header_tmp;
     MPEGHeader mpeg_header_tmp;
-
     Ptr<UniformRandomVariable> frame_size_gen = CreateObject<UniformRandomVariable>();
-
     frame_size_gen->SetAttribute("Min", DoubleValue(0));
     frame_size_gen->SetAttribute(
         "Max",
@@ -371,10 +491,19 @@ DashServer::SendSegment(uint32_t video_id,
                                                         http_header_tmp.GetSerializedSize()),
                              1)));
 
-    uint32_t total_segment_bytes = 0;
     for (uint32_t f_id = 0; f_id < MPEG_FRAMES_PER_SEGMENT; f_id++)
     {
-        uint32_t frame_size = (unsigned)frame_size_gen->GetValue();
+        uint32_t frame_size = 0;
+        if (metadataHit)
+        {
+            const uint32_t base = targetSegmentBytes / MPEG_FRAMES_PER_SEGMENT;
+            const uint32_t rem = targetSegmentBytes % MPEG_FRAMES_PER_SEGMENT;
+            frame_size = base + ((f_id < rem) ? 1u : 0u);
+        }
+        else
+        {
+            frame_size = static_cast<uint32_t>(frame_size_gen->GetValue());
+        }
 
         HTTPHeader http_header;
         http_header.SetMessageType(HTTP_RESPONSE);
@@ -396,8 +525,18 @@ DashServer::SendSegment(uint32_t video_id,
 
         m_queues[socket].push_back(*frame);
     }
-    
-    NS_LOG_UNCOND("SendSegment: Queued " << MPEG_FRAMES_PER_SEGMENT << " frames for socket=" << socket << ". Calling DataSend.");
+
+    NS_LOG_UNCOND("SendSegment: seg=" << segment_id
+                  << " rate=" << resolution
+                  << " bytes=" << total_segment_bytes
+                  << " expected=" << (metadataHit ? targetSegmentBytes : 0)
+                  << " source=" << (metadataHit ? "metadata" : "synthetic"));
+    WriteMetadataTrace(video_id,
+                       segment_id,
+                       resolution,
+                       targetSegmentBytes,
+                       total_segment_bytes,
+                       metadataHit ? "metadata" : "synthetic");
     DataSend(socket, 0);
 }
 

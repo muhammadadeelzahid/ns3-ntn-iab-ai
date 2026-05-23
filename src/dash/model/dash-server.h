@@ -21,6 +21,8 @@
 #ifndef DASH_SERVER_H
 #define DASH_SERVER_H
 
+#include "dash-metadata.h"
+
 #include "ns3/address.h"
 #include "ns3/application.h"
 #include "ns3/event-id.h"
@@ -29,6 +31,7 @@
 
 #include <map>
 #include <queue>
+#include <string>
 
 namespace ns3
 {
@@ -106,6 +109,19 @@ class DashServer : public Application
     
     EventId m_periodicSendEvent;  // Periodic event to ensure fair sending to all connections
     void PeriodicSendCheck();     // Periodically check all sockets and try to send
+
+    std::string m_metadataCsvPath;
+    std::string m_metadataTracePath;
+    DashMetadataIndex m_metadataIndex;
+    bool m_metadataReady;
+    bool m_metadataTraceHeaderWritten;
+
+    void WriteMetadataTrace(uint32_t videoId,
+                            uint32_t segmentId,
+                            uint32_t bitrateBps,
+                            uint32_t targetBytes,
+                            uint32_t totalBytes,
+                            const char* source);
 };
 
 } // namespace ns3

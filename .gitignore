@@ -48,3 +48,4 @@ build/
 /.cproject
 /.project
 .vscode
+train_jsonl

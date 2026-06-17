@@ -9,6 +9,31 @@ import shlex
 from waflib import Options, Utils, Logs, TaskGen, Build, Context
 from waflib.Errors import WafError
 
+
+# Linux PR_SET_PDEATHSIG: ensure the ns-3 binary launched by waf dies if
+# waf (or any ancestor that becomes the kernel-recorded parent) goes away
+# without performing explicit cleanup (e.g. SIGKILL, SSH session loss).
+# This prevents orphaned scratch binaries chewing CPU after the Python
+# orchestrator that spawned waf exits ungracefully.
+_PR_SET_PDEATHSIG = 1
+
+
+def _ns3_child_preexec():
+    """preexec_fn applied to every ns-3 binary launched by waf --run."""
+    if not sys.platform.startswith('linux'):
+        return
+    try:
+        import ctypes
+        import ctypes.util
+        import signal as _signal
+        libc_name = ctypes.util.find_library('c') or 'libc.so.6'
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+        libc.prctl(_PR_SET_PDEATHSIG, _signal.SIGTERM, 0, 0, 0)
+    except Exception:
+        # Best-effort only; other cleanup paths (process group kill, atexit)
+        # still cover the common cases.
+        pass
+
 # these are set from the main wscript file
 APPNAME=None
 VERSION=None
@@ -132,7 +157,8 @@ def run_argv(argv, env, os_env=None, cwd=None, force_no_valgrind=False):
         try:
             WindowsError
         except NameError:
-            retval = subprocess.Popen(argv, env=proc_env, cwd=cwd).wait()
+            retval = subprocess.Popen(argv, env=proc_env, cwd=cwd,
+                                      preexec_fn=_ns3_child_preexec).wait()
         else:
             try:
                 retval = subprocess.Popen(argv, env=proc_env, cwd=cwd).wait()

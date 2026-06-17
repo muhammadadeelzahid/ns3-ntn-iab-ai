@@ -163,36 +163,40 @@ def main():
     try:
         decisions_made = 0
         while True:
+            # Bail out before blocking if the simulation subprocess is gone.
+            if exp.proc is not None and exp.proc.poll() is not None:
+                print(
+                    f"[Python] ns-3 subprocess exited (rc={exp.proc.returncode}) "
+                    f"before signalling finish; stopping loop.",
+                    flush=True,
+                )
+                break
+
             # Block until C++ writes the state
             msg.PyRecvBegin()
-            
+
             # Check if simulation finished
             if msg.PyGetFinished():
                 print("[Python] Simulation finished!", flush=True)
                 break
-            
+
             # Get the state struct
             state = msg.GetCpp2PyStruct()
-            
+
             # Make a decision
             chosen_bitrate, delay_s = fdash_heuristic(state)
-            
+
             msg.PyRecvEnd()
-            
+
             # Write the action back to C++
             msg.PySendBegin()
             action = msg.GetPy2CppStruct()
             action.chosen_bitrate_bps = chosen_bitrate
             action.delay_s = delay_s
             msg.PySendEnd()
-            
+
             decisions_made += 1
-            
-            # Stop early if we just want a quick test
-            # if decisions_made >= 10:
-            #    print("[Python] 10 decisions made, testing complete.")
-            #    break
-                
+
     except KeyboardInterrupt:
         print("[Python] Interrupted by user.", flush=True)
     finally:

@@ -1,0 +1,46 @@
+{
+  "feature_names": [
+    "throughput_estimate_bps",
+    "buffer_level_s",
+    "buffer_differential_s",
+    "segment_fetch_time_s",
+    "last_segment_bitrate_bps",
+    "smoothed_rtt_ms",
+    "loss_rate_recent"
+  ],
+  "log_features": [
+    "throughput_estimate_bps",
+    "last_segment_bitrate_bps"
+  ],
+  "mean": [
+    16.588212987162407,
+    28.59941569980188,
+    2.4288056124830777,
+    0.5787183985306258,
+    13.033188301577855,
+    60.373266381623075,
+    21.27031255993066
+  ],
+  "std": [
+    1.8768066857820187,
+    30.169849197313766,
+    1.758154718726091,
+    1.8600852332255726,
+    4.477389967662832,
+    59.326605321893766,
+    194.39686139736204
+  ],
+  "source": "/tmp/patched.jsonl",
+  "fitted_at": "2026-06-15T15:43:07.279403+00:00",
+  "n_rows": 12114,
+  "n_files": 1,
+  "per_feature_fit_count": {
+    "throughput_estimate_bps": 12114,
+    "buffer_level_s": 12114,
+    "buffer_differential_s": 12114,
+    "segment_fetch_time_s": 12114,
+    "last_segment_bitrate_bps": 12114,
+    "smoothed_rtt_ms": 5964,
+    "loss_rate_recent": 12114
+  }
+}

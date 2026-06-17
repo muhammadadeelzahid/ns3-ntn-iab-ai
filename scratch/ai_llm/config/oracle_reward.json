@@ -1,0 +1,30 @@
+{
+  "version": "semantic-dp-diverse",
+  "description": "Diversity-tuned reward profile for scripts/dp_oracle.py. Reduces rung-5 collapse via softer VMAF greed (w_vmaf), stronger switch/stall costs, a linear rung prior (w_rung), and conservative throughput planning (throughput_planning_factor) for buffer transitions.",
+  "reward_weights": {
+    "w_vmaf": 0.65,
+    "w_stall": 18.0,
+    "w_switch": 0.8,
+    "w_rung": 6.0,
+    "scene_cut_discount": 0.65,
+    "w_quality_sensitive": 0.0
+  },
+  "semantic_weight_mixture": {
+    "quality_sensitivity": 0.5,
+    "saliency_score": 0.3,
+    "object_score": 0.2
+  },
+  "player_model": {
+    "segment_duration_s": 3.3,
+    "max_buffer_s": 30.0,
+    "startup_threshold_s": 10.0,
+    "initial_buffer_s": 0.0,
+    "buffer_bin_size_s": 0.5
+  },
+  "solver": {
+    "gamma": 1.0,
+    "throughput_floor_bps": 10000.0,
+    "throughput_planning_factor": 0.85,
+    "throughput_source": "per_run_node"
+  }
+}

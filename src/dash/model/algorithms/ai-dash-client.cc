@@ -41,10 +41,7 @@ AiDashClient::AiDashClient()
     m_lastDecisionDelayS(0.0),
     m_lastThroughputEstimateBps(0.0),
     m_smoothedRttMs(-1.0),
-    m_lossRateRecent(-1.0),
-    m_lossEventsSinceLastDecision(0),
-    m_lastDecisionTime(Seconds(0)),
-    m_socketTraceConnected(false)
+    m_rttTraceConnected(false)
 {
   NS_LOG_FUNCTION(this);
 }
@@ -129,18 +126,16 @@ AiDashClient::OnRttSample(Time oldValue, Time newValue)
 }
 
 void
-AiDashClient::OnPacketLoss(uint32_t packetNumber, uint32_t packetSize, uint8_t pathId)
-{
-  (void)packetNumber;
-  (void)packetSize;
-  (void)pathId;
-  ++m_lossEventsSinceLastDecision;
-}
-
-void
 AiDashClient::MaybeAttachSocketTraces()
 {
-  if (m_socketTraceConnected)
+  if (!m_socketTraceConnected)
+  {
+    m_rttTraceConnected = false;
+  }
+
+  DashClient::MaybeAttachSocketTraces();
+
+  if (m_rttTraceConnected)
   {
     return;
   }
@@ -152,9 +147,6 @@ AiDashClient::MaybeAttachSocketTraces()
   }
 
   bool anyConnected = false;
-  anyConnected = socket->TraceConnectWithoutContext("PacketLoss",
-                                                    MakeCallback(&AiDashClient::OnPacketLoss, this)) ||
-                 anyConnected;
   anyConnected = socket->TraceConnectWithoutContext("RTT0",
                                                     MakeCallback(&AiDashClient::OnRttSample, this)) ||
                  anyConnected;
@@ -168,8 +160,8 @@ AiDashClient::MaybeAttachSocketTraces()
 
   if (anyConnected)
   {
-    m_socketTraceConnected = true;
-    NS_LOG_INFO("AiDashClient attached QUIC RTT/loss traces for node " << GetNode()->GetId());
+    m_rttTraceConnected = true;
+    NS_LOG_INFO("AiDashClient attached QUIC RTT traces for node " << GetNode()->GetId());
   }
 }
 
@@ -177,7 +169,6 @@ void
 AiDashClient::CalcNextSegment(uint32_t currRate, uint32_t& nextRate, Time& delay)
 {
   NS_LOG_FUNCTION(this << currRate);
-  MaybeAttachSocketTraces();
 
   auto* msgIface = Ns3AiMsgInterface::Get()
       ->GetInterface<AbrDashCpp2PyMsg, AbrDashPy2CppMsg>();
@@ -199,16 +190,6 @@ AiDashClient::CalcNextSegment(uint32_t currRate, uint32_t& nextRate, Time& delay
   const double throughputStdBps = ComputeThroughputStd();
   const double segmentFetchTimeS = GetSegmentFetchTime();
   const Time now = Simulator::Now();
-  const double dtSinceLastDecisionS =
-      (m_lastDecisionTime > Seconds(0)) ? (now - m_lastDecisionTime).GetSeconds() : 0.0;
-  if (dtSinceLastDecisionS > 0.0)
-  {
-    m_lossRateRecent = static_cast<double>(m_lossEventsSinceLastDecision) / dtSinceLastDecisionS;
-  }
-  else if (m_lossRateRecent < 0.0)
-  {
-    m_lossRateRecent = 0.0;
-  }
   constexpr double kSegmentDurationS = 2.0; // Each metadata segment represents 2 seconds.
   cpp2py->node_id              = GetNode()->GetId();
   cpp2py->segment_id           = m_segmentId;
@@ -230,8 +211,6 @@ AiDashClient::CalcNextSegment(uint32_t currRate, uint32_t& nextRate, Time& delay
   cpp2py->last_decision_delay_s = m_lastDecisionDelayS;
   cpp2py->bitrate_switch_count_recent = ComputeRecentSwitchCount();
   msgIface->CppSendEnd();  // Python unblocks
-  m_lossEventsSinceLastDecision = 0;
-  m_lastDecisionTime = now;
 
   // 2. Wait for Python's decision
   msgIface->CppRecvBegin();

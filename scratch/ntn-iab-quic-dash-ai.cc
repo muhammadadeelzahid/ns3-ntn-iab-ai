@@ -912,7 +912,15 @@ main (int argc, char *argv[])
   // QUIC Congestion Control Configuration
   // QUIC Congestion Control Configuration
   std::string ccAlgorithm = "ns3::QuicBbr";
+  double simStopTime = 90.0;
+  double maxVideoDuration = 0.0;
   cmd.AddValue("ccAlgorithm", "QUIC Congestion Control Algorithm (ns3::QuicBbr or ns3::QuicCongestionControl)", ccAlgorithm);
+  cmd.AddValue("simStopTime",
+               "Simulation stop time in seconds (apps and Simulator::Stop)",
+               simStopTime);
+  cmd.AddValue("maxVideoDuration",
+               "Cap DASH playback to this many seconds of content (0 = full metadata)",
+               maxVideoDuration);
   cmd.Parse(argc, argv);
 
   // Set the socket type based on the command line argument
@@ -1081,16 +1089,11 @@ main (int argc, char *argv[])
   NS_LOG_UNCOND("Actually created " << enbNodes.GetN() << " eNB nodes");
   NS_LOG_UNCOND("================================\n");
 
-  // Video duration configuration
-  // double desiredVideoDuration = 0.0;  // Desired video duration in seconds
-  
-  // Calculate minimum simulation duration
-  // Video duration + buffer time for handshake, initial buffering, cleanup, and app stop buffer
-  // double minSimulationDuration = desiredVideoDuration*1.15;
-  
-  // Get current stopTime (line 1024)
-  double desiredVideoDuration = 90.0;
-  double stopTime = desiredVideoDuration;  // Minimal time for testing
+  double stopTime = simStopTime;
+  if (stopTime <= 0.0)
+  {
+    stopTime = 90.0;
+  }
   
   // // Check if current stopTime is less than minimum, and adjust if needed
   // if (stopTime < minSimulationDuration)
@@ -1369,6 +1372,10 @@ main (int argc, char *argv[])
                                   algorithm);
     dashClient.SetAttribute ("VideoId", UintegerValue(u + 1));
     dashClient.SetAttribute ("MetadataCsvPath", StringValue(dashMetadataCsv));
+    if (maxVideoDuration > 0.0)
+    {
+      dashClient.SetAttribute ("MaxVideoDuration", TimeValue(Seconds(maxVideoDuration)));
+    }
     dashClient.SetAttribute ("TargetDt", TimeValue(Seconds(target_dt)));
     dashClient.SetAttribute ("window", TimeValue(MilliSeconds(window)));
     dashClient.SetAttribute ("bufferSpace", UintegerValue(bufferSpace));

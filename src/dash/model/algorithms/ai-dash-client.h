@@ -43,18 +43,14 @@ private:
   double ComputeThroughputEma(double alpha = 0.4) const;
   double ComputeThroughputStd() const;
   uint32_t ComputeRecentSwitchCount() const;
-  void MaybeAttachSocketTraces();
+  void MaybeAttachSocketTraces() override;
   void OnRttSample(Time oldValue, Time newValue);
-  void OnPacketLoss(uint32_t packetNumber, uint32_t packetSize, uint8_t pathId);
 
   uint32_t m_prevBitrate;
   double m_lastDecisionDelayS;
   double m_lastThroughputEstimateBps;
   double m_smoothedRttMs;
-  double m_lossRateRecent;
-  uint32_t m_lossEventsSinceLastDecision;
-  Time m_lastDecisionTime;
-  bool m_socketTraceConnected;
+  bool m_rttTraceConnected;
   std::deque<double> m_recentThroughputBps;
   std::deque<uint32_t> m_recentMappedRates;
   static constexpr uint32_t kRecentHistoryWindow = 8;

@@ -122,7 +122,12 @@ DashClient::DashClient()
       m_periodicBufferCheckTimer(),
       m_maxVideoDuration(Seconds(0)),
       m_maxSegments(0),
-      m_metadataReady(false)
+      m_metadataReady(false),
+      m_lastCompletedSegmentId(-1),
+      m_lossRateRecent(-1.0),
+      m_lossEventsSinceLastDecision(0),
+      m_lastDecisionTime(Seconds(0)),
+      m_socketTraceConnected(false)
 {
     NS_LOG_FUNCTION(this);
     m_parser.SetApp(this); // So the parser knows where to send the received messages
@@ -182,6 +187,22 @@ DashClient::StartApplication(void) // Called at time specified by Start
             {
                 NS_LOG_WARN("DashClient " << m_id << " metadata load failed (" << error
                              << "). Falling back to MaxVideoDuration behavior.");
+            }
+        }
+
+        if (m_metadataReady && m_maxVideoDuration.GetSeconds() > 0)
+        {
+            double frameDurationSeconds = MPEG_TIME_BETWEEN_FRAMES / 1000.0;
+            double segmentDurationSeconds =
+                (1.0 * MPEG_FRAMES_PER_SEGMENT * frameDurationSeconds);
+            uint32_t cap = static_cast<uint32_t>(
+                std::ceil(m_maxVideoDuration.GetSeconds() / segmentDurationSeconds));
+            if (cap > 0 && cap < m_maxSegments)
+            {
+                NS_LOG_UNCOND("DashClient " << m_id << " capping segments " << m_maxSegments
+                              << " -> " << cap << " (max_video_duration="
+                              << m_maxVideoDuration.GetSeconds() << "s)");
+                m_maxSegments = cap;
             }
         }
 
@@ -450,12 +471,46 @@ DashClient::HandleRead(Ptr<Socket> socket)
 }
 
 void
+DashClient::OnPacketLoss(uint32_t packetNumber, uint32_t packetSize, uint8_t pathId)
+{
+    (void)packetNumber;
+    (void)packetSize;
+    (void)pathId;
+    ++m_lossEventsSinceLastDecision;
+}
+
+void
+DashClient::MaybeAttachSocketTraces()
+{
+    if (m_socketTraceConnected)
+    {
+        return;
+    }
+
+    Ptr<Socket> socket = GetSocket();
+    if (!socket)
+    {
+        return;
+    }
+
+    if (socket->TraceConnectWithoutContext("PacketLoss",
+                                           MakeCallback(&DashClient::OnPacketLoss, this)))
+    {
+        m_socketTraceConnected = true;
+        NS_LOG_INFO("DashClient attached QUIC PacketLoss trace for node " << GetNode()->GetId());
+    }
+}
+
+void
 DashClient::ConnectionSucceeded(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);
     NS_LOG_UNCOND("DashClient " << m_id << " (VideoId=" << m_videoId << ") - Connection SUCCEEDED at time " << Simulator::Now().GetSeconds() << "s");
     m_connected = true;
     m_connectWatchdogTimer.Cancel();
+    m_lastCompletedSegmentId = -1;
+    m_socketTraceConnected = false;
+    m_lossEventsSinceLastDecision = 0;
     socket->SetCloseCallbacks(MakeCallback(&DashClient::ConnectionNormalClosed, this),
                               MakeCallback(&DashClient::ConnectionErrorClosed, this));
 
@@ -473,6 +528,8 @@ DashClient::ConnectionFailed(Ptr<Socket> socket)
     m_connected = false;
     m_RequestPending = false;
     m_pendingRetryUsed = false;
+    m_socketTraceConnected = false;
+    m_lossEventsSinceLastDecision = 0;
     StartApplication();
 }
 
@@ -494,6 +551,8 @@ DashClient::ConnectionErrorClosed(Ptr<Socket> socket)
     m_connected = false;
     m_RequestPending = false;
     m_pendingRetryUsed = false;
+    m_socketTraceConnected = false;
+    m_lossEventsSinceLastDecision = 0;
     StartApplication();
 }
 
@@ -601,10 +660,40 @@ DashClient::MessageReceived(Packet message)
 
     if (mpegHeader.GetFrameId() == MPEG_FRAMES_PER_SEGMENT - 1)
     {
+        const uint32_t completedSegmentId = httpHeader.GetSegmentId();
+
+        // Late or duplicate last-frame deliveries (watchdog retries, QUIC reordering,
+        // end-of-catalog drain) must not emit another ABR decision or request a segment.
+        if (m_lastCompletedSegmentId >= 0 &&
+            static_cast<int32_t>(completedSegmentId) <= m_lastCompletedSegmentId)
+        {
+            NS_LOG_DEBUG("Ignoring duplicate/late frame-99 for segment "
+                         << completedSegmentId << " (last completed "
+                         << m_lastCompletedSegmentId << ")");
+            return true;
+        }
+
         m_RequestPending = false;
         m_segmentWatchdogTimer.Cancel();
         m_pendingRetryUsed = false;
         m_segmentFetchTime = Simulator::Now() - m_requestTime;
+
+        MaybeAttachSocketTraces();
+        if (m_socketTraceConnected)
+        {
+            const Time now = Simulator::Now();
+            const double dtSinceLastDecisionS =
+                (m_lastDecisionTime > Seconds(0)) ? (now - m_lastDecisionTime).GetSeconds() : 0.0;
+            if (dtSinceLastDecisionS > 0.0)
+            {
+                m_lossRateRecent =
+                    static_cast<double>(m_lossEventsSinceLastDecision) / dtSinceLastDecisionS;
+            }
+            else
+            {
+                m_lossRateRecent = 0.0;
+            }
+        }
 
         // Feed the bitrate info to the player
         AddBitRate(Simulator::Now(), 8 * m_segment_bytes / m_segmentFetchTime.GetSeconds());
@@ -637,24 +726,42 @@ DashClient::MessageReceived(Packet message)
             m_rateChanges++;
         }
 
-        if (bufferDelay == Seconds(0))
-        {
-            RequestSegment();
-        }
-        else
-        {
-            Simulator::Schedule(bufferDelay, &DashClient::RequestSegment, this);
-        }
-
         std::cout << Simulator::Now().GetSeconds() << " ue-id: " << GetNode()->GetId()
+                  << " videoId: " << m_videoId << " segmentId: " << completedSegmentId
                   << " newBitRate: " << m_bitRate << " oldBitRate: " << old
                   << " estBitRate: " << GetBitRateEstimate()
                   << " interTime: " << m_player.m_interruption_time.GetSeconds()
                   << " T: " << currDt.GetSeconds()
                   << " dT: " << (m_lastDt >= Time("0s") ? (currDt - m_lastDt).GetSeconds() : 0)
-                  << " del: " << bufferDelay.GetSeconds() << std::endl;
+                  << " del: " << bufferDelay.GetSeconds()
+                  << " fetch: " << m_segmentFetchTime.GetSeconds()
+                  << " loss: " << GetLossRateRecent() << std::endl;
 
-        NS_LOG_INFO("==== Last frame received. Requesting segment " << m_segmentId);
+        m_lossEventsSinceLastDecision = 0;
+        m_lastDecisionTime = Simulator::Now();
+
+        m_lastCompletedSegmentId = static_cast<int32_t>(completedSegmentId);
+
+        const bool catalogExhausted =
+            (m_maxSegments > 0 && m_segmentId >= m_maxSegments);
+        if (!catalogExhausted)
+        {
+            if (bufferDelay == Seconds(0))
+            {
+                RequestSegment();
+            }
+            else
+            {
+                Simulator::Schedule(bufferDelay, &DashClient::RequestSegment, this);
+            }
+
+            NS_LOG_INFO("==== Last frame received. Requesting segment " << m_segmentId);
+        }
+        else
+        {
+            NS_LOG_INFO("==== Last frame received for final segment " << completedSegmentId
+                        << "; catalog limit reached, not requesting more");
+        }
 
         (void)old;
         NS_LOG_INFO("!@#$#@!$@#\t" << Simulator::Now().GetSeconds() << " old: " << old

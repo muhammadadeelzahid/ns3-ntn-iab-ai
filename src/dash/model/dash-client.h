@@ -112,6 +112,14 @@ class DashClient : public Application
 
     double GetSegmentFetchTime();
 
+    virtual double GetLossRateRecent() const
+    {
+        return m_lossRateRecent;
+    }
+
+    void OnPacketLoss(uint32_t packetNumber, uint32_t packetSize, uint8_t pathId);
+    virtual void MaybeAttachSocketTraces();
+
     // 6-rung ladder aligned with metadata representations (250k .. 12000k).
     std::vector<uint32_t> rates = {250000, 750000, 1500000, 3000000, 6000000, 12000000};
 
@@ -126,6 +134,10 @@ class DashClient : public Application
 
     double m_bitrateEstimate;
     uint32_t m_segmentId; // The id of the current segment
+    double m_lossRateRecent; // -1 when unavailable; events/sec since last decision when tracked
+    uint32_t m_lossEventsSinceLastDecision;
+    Time m_lastDecisionTime;
+    bool m_socketTraceConnected;
 
   private:
     /**
@@ -193,6 +205,7 @@ class DashClient : public Application
     uint32_t m_pendingSegmentId = 0;
     uint32_t m_pendingBitRate = 0;
     bool m_pendingRetryUsed = false;
+    int32_t m_lastCompletedSegmentId; // Last HTTP segment id that fired completion (-1 = none)
 
     EventId m_keepAliveTimer;
     EventId m_connectWatchdogTimer;

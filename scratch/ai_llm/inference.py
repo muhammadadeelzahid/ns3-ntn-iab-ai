@@ -1,41 +1,34 @@
 #!/usr/bin/env python3
 """
-Inference-time ABR policy wrapper.
-
-This keeps a deterministic policy stub while the full LLM policy is integrated.
+Inference-time ABR policy wrappers.
 """
 
-from typing import Dict, List, Optional
+from collections import deque
+from typing import Deque, Dict, List, Optional
 
+try:
+    import torch
+except ImportError:
+    torch = None
 
-# ns-3 DASH representation ladder (must stay aligned with C++).
-NS3_RATE_LADDER_BPS: List[int] = [
-    45000,
-    89000,
-    131000,
-    178000,
-    221000,
-    263000,
-    334000,
-    396000,
-    522000,
-    595000,
-    791000,
-    1033000,
-    1245000,
-    1547000,
-    2134000,
-    2484000,
-    3079000,
-    3527000,
-    3840000,
-    4220000,
-    9500000,
-    15000000,
-    30000000,
-    66000000,
-    85000000,
-]
+try:
+    from ai_llm.features import (
+        build_model_input,
+        load_scaler,
+        network_observation,
+        normalize_network_vector,
+    )
+    from ai_llm.model import create_model
+    from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
+except ImportError:
+    from features import (
+        build_model_input,
+        load_scaler,
+        network_observation,
+        normalize_network_vector,
+    )
+    from model import create_model
+    from paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
 
 
 class PolicyDecision:
@@ -51,7 +44,7 @@ class RuleBasedLlmPolicy:
     Replace this class internals with LLM inference in later phases.
     """
 
-    def __init__(self, ladder_bps: Optional[List[int]] = None, max_policy_rate_bps: int = 9500000) -> None:
+    def __init__(self, ladder_bps: Optional[List[int]] = None, max_policy_rate_bps: int = 12_000_000) -> None:
         self.ladder_bps = ladder_bps or list(NS3_RATE_LADDER_BPS)
         self.max_policy_rate_bps = max_policy_rate_bps
 
@@ -94,3 +87,131 @@ class RuleBasedLlmPolicy:
             delay_s=0.0,
             reason="rule_based_stub_capped",
         )
+
+
+class LlmAbrPolicy:
+    """
+    Phase-2 policy wrapper:
+    - build_model_input() for normalized tensors
+    - lightweight model forward pass
+    - deterministic fallback to rule-based policy
+    """
+
+    def __init__(
+        self,
+        ladder_bps: Optional[List[int]] = None,
+        checkpoint_path: Optional[str] = None,
+        network_scaler_path: str = DEFAULT_NETWORK_SCALER,
+        semantic_scaler_path: str = DEFAULT_SEMANTIC_SCALER,
+        model_id: str = "Qwen/Qwen2.5-7B-Instruct",
+        device: Optional[str] = None,
+        window: int = 1,
+    ) -> None:
+        self.ladder_bps = ladder_bps or list(NS3_RATE_LADDER_BPS)
+        self.network_scaler_path = network_scaler_path
+        self.semantic_scaler_path = semantic_scaler_path
+        self.model_id = model_id
+        self.checkpoint_path = checkpoint_path
+        self._fallback = RuleBasedLlmPolicy(ladder_bps=self.ladder_bps)
+
+        # Time-series window: per-UE ring buffer of raw network observations. The window
+        # size is pinned from the checkpoint when present (so inference matches training);
+        # the constructor value is the default/override.
+        self._window = max(1, int(window))
+        self._net_scaler = load_scaler(network_scaler_path)
+        self._history: Dict[int, Deque[Dict[str, float]]] = {}
+
+        self._ready = False
+        self._model = None
+        self._device = "cpu"
+        self._init_error = ""
+        self._setup_model(device)
+
+    def _setup_model(self, device: Optional[str]) -> None:
+        if torch is None:
+            self._init_error = "torch_unavailable"
+            return
+        try:
+            if device:
+                self._device = device
+            elif torch.cuda.is_available():
+                self._device = "cuda"
+            self._model = create_model(
+                network_dim=7,
+                semantic_dim=5,
+                ladder_dim=2,
+                d_model=256,
+                num_classes=len(self.ladder_bps),
+                model_id=self.model_id,
+            ).to(self._device)
+            self._model.eval()
+            if self.checkpoint_path:
+                ckpt = torch.load(self.checkpoint_path, map_location=self._device)
+                if isinstance(ckpt, dict) and "window" in ckpt:
+                    self._window = max(1, int(ckpt["window"]))  # match training window
+                state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+                self._model.load_state_dict(state, strict=False)
+            self._ready = True
+        except Exception as exc:  # pylint: disable=broad-except
+            self._init_error = "model_init_failed:%s" % exc
+            self._ready = False
+            self._model = None
+
+    def _network_window(self, state) -> List[List[float]]:
+        """Append this UE's raw observation to its ring buffer and return [W, 7].
+
+        Left-pads with the earliest available observation until the buffer holds W steps.
+        """
+        node = int(getattr(state, "node_id", 0))
+        buf = self._history.get(node)
+        if buf is None:
+            buf = deque(maxlen=self._window)
+            self._history[node] = buf
+        buf.append(network_observation(state))
+        window = list(buf)
+        if len(window) < self._window:
+            window = [window[0]] * (self._window - len(window)) + window
+        return [normalize_network_vector(o, self._net_scaler) for o in window]
+
+    def reset_history(self) -> None:
+        """Clear per-UE windows (call between independent runs/episodes)."""
+        self._history.clear()
+
+    def predict(self, state, segment_meta) -> PolicyDecision:
+        try:
+            model_input = build_model_input(
+                state=state,
+                segment_meta=segment_meta,
+                network_scaler_path=self.network_scaler_path,
+                semantic_scaler_path=self.semantic_scaler_path,
+            )
+            if not self._ready or self._model is None:
+                fallback = self._fallback.predict(state, segment_meta.semantic_norm)
+                fallback.reason = "fallback_%s" % (self._init_error or "model_not_ready")
+                return fallback
+
+            if torch is None:
+                raise RuntimeError("torch_unavailable")
+            # Network branch uses the time-series window; semantic + ladder are current-segment.
+            net_window = self._network_window(state)  # [W, 7]
+            network_t = torch.tensor([net_window], dtype=torch.float32, device=self._device)  # [1, W, 7]
+            semantic_t = torch.tensor([model_input.semantic_norm], dtype=torch.float32, device=self._device)
+            ladder_t = torch.tensor([model_input.ladder_context], dtype=torch.float32, device=self._device)
+            with torch.inference_mode():
+                logits, _delay_unused = self._model(network_t, semantic_t, ladder_t)
+
+            if logits.ndim != 2 or logits.shape[1] != len(self.ladder_bps):
+                raise RuntimeError("invalid_logits_shape:%s" % (tuple(logits.shape),))
+            best_idx = int(torch.argmax(logits[0]).item())
+            if best_idx < 0 or best_idx >= len(self.ladder_bps):
+                raise RuntimeError("invalid_rate_index:%d" % best_idx)
+
+            return PolicyDecision(
+                chosen_bitrate_bps=int(self.ladder_bps[best_idx]),
+                delay_s=0.0,
+                reason="llm_policy_model",
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            fallback = self._fallback.predict(state, segment_meta.semantic_norm)
+            fallback.reason = "fallback_policy_error:%s" % exc
+            return fallback

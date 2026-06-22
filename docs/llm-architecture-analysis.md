@@ -35,9 +35,15 @@ Two implications up front:
 
 | Tier | Model | When it's the right call | Cost |
 |------|-------|--------------------------|------|
-| **0** | Multimodal **encoder + policy head**, no LLM (≈ today's `LlmAbrModel` minus the placeholder) | Input stays the 24 numeric scalars; you want a strong, fast baseline | ~0.1–1 M params, <1 ms/infer |
-| **1** | **Small instruct LLM (0.5–3B), frozen + LoRA**, state injected as soft tokens, optional text semantics, policy head | You enrich the input with **language/semantic context** and want pretrained priors + better OOD generalization | LoRA-trainable; ~5–30 ms/infer GPU |
-| **2** | **7–8B (Qwen2.5-7B) + LoRA** | Long natural-language context, multi-signal reasoning, or the thesis explicitly needs a "large" model | 10s of ms/infer; heavy for a per-UE loop |
+| **0** | Multimodal **encoder + policy head**, no LLM — the `variant="v0"` path (encoder → placeholder `backbone_projector` → head). **Built & trained.** | Input stays the 24 numeric scalars; you want a strong, fast baseline | ~0.1–1 M params, <1 ms/infer |
+| **1** | **Small instruct LLM (Qwen2.5-1.5B, H=1536), frozen + LoRA**; encoder → **`SoftTokenProjection`** → soft tokens injected via `inputs_embeds`, optional text semantics, policy head — the `variant="v2"` path. | You enrich the input with **language/semantic context** and want pretrained priors + better OOD generalization | LoRA-trainable; ~5–30 ms/infer GPU |
+| **2** | **7B (Qwen2.5-7B, H=3584) + LoRA** | Long natural-language context, multi-signal reasoning, or the thesis explicitly needs a "large" model | 10s of ms/infer; heavy for a per-UE loop |
+
+> Read `H` (LLM hidden size) from the loaded `config.hidden_size`, never hardcode: Qwen2.5-1.5B
+> is **1536**, Qwen2.5-7B is **3584** (not 4096). The default backbone is now `Qwen2.5-1.5B-Instruct`.
+> The benchmark ladder (`docs/benchmark-plan.md`) splits Tier 1 into **V1** (random-init LLM,
+> full-FT — `variant="v1"`) and **V2** (pretrained frozen+LoRA — `variant="v2"`) to isolate
+> pretrained knowledge.
 
 **Recommendation:** treat **Tier 0 as the mandatory baseline** (it's almost built), and
 make the LLM (Tier 1) **prove it beats Tier 0 on held-out QoE**. If the LLM only ever sees
@@ -88,23 +94,31 @@ LLM is hard to justify on input grounds alone.
 
 ## 4. Encoder *before* the LLM — yes
 
-A lightweight **multimodal encoder** maps the heterogeneous tabular state into the LLM's
-embedding space. This already exists in `model.py` (`MultimodalEncoder`) and is the right
-shape; it just currently feeds a placeholder, not a real backbone.
+A lightweight **multimodal encoder** maps the heterogeneous tabular state into a fused
+embedding `e_fused [B, 256]`. This exists in `model.py` (`MultimodalEncoder`) and is
+**identical across all variants** (v0/v1/v2) — it is *not* changed to target the LLM. What
+maps into the LLM's token-embedding space is a **separate** module, `SoftTokenProjection`,
+bolted after the encoder. Keeping these two apart is deliberate: it lets v0 reuse the exact
+same encoder, keeps the encoder weights comparable across variants, and makes v0 a strict
+sub-network.
 
 Spec:
 
-- **Network encoder:** `Linear(7, d_net)` → SiLU → LayerNorm → Dropout → `Linear` (d_net≈128).
-- **Semantic encoder:** `Linear(5, d_sem)` → … (d_sem≈64).
-- **Ladder encoder:** per-rung `Linear(2, d_l)` over the 6 rungs, then attention/mean pool
-  (a tiny self-attention over rungs is better than mean — it lets the policy compare rungs,
-  which is what the decision *is*). Output d_ladder≈32–64.
-- **Fusion → soft tokens:** concat branch embeddings → `Linear(·, k × d_model)` where
-  `d_model` = LLM hidden size; reshape to **k prefix tokens**. Inject as a prefix (or
-  replace BOS) ahead of any text tokens.
-- **Sentinel/mask awareness:** RTT/loss are `-1`≈half the time (imputed). Feed the
-  `missing_masks` bits into the network encoder (concat) so the model can distinguish
-  "RTT low" from "RTT unknown." (Today masks are stored but unused — wire them here.)
+- **Network encoder:** 1D-CNN over the time window (see §12) → `net_emb` (d_net=128).
+- **Semantic encoder:** `Linear(5, 64)` → SiLU → LayerNorm → Dropout → `Linear(64,64)` (d_sem=64).
+- **Ladder encoder:** per-rung `Linear(2, 32)` over the 6 rungs, then mean-pool (a tiny
+  self-attention over rungs is a fair upgrade — it lets the policy compare rungs). d_ladder=32.
+- **Fusion:** concat branch embeddings `[B,224]` → `Linear(224, 256)` → `e_fused [B,256]`. This
+  is the **shared** encoder output; **v0** feeds it to the placeholder `backbone_projector` → head.
+- **Soft-token projection (v1/v2 only, the LLM-embedding step):** `SoftTokenProjection` =
+  `Linear(256 → k·H)` → reshape to **`soft_tokens [B,k,H]`**, where `H` = `llm.config.hidden_size`
+  (1536 for Qwen2.5-1.5B) and k≈4. These are injected as a prefix via `inputs_embeds=` (no
+  `input_ids`), ahead of any future text tokens; the LLM's final-layer hidden state is mean-pooled
+  over the k positions → policy head. *This* projection — not the encoder — is what "matches the
+  LLM token-embedding space."
+- **Sentinel/mask awareness:** RTT/loss are `-1`≈half the time (imputed). The `missing_masks` bits
+  are appended to the network vector (7→9 channels) so the model distinguishes "RTT low" from
+  "RTT unknown." (Already wired in `features.py` + the loader.)
 
 Design notes: keep it deterministic, no dropout at inference, freeze feature order via
 `features.build_model_input` for train/infer parity (already the case).
@@ -163,18 +177,22 @@ flowchart LR
   PH --> ACT[argmax rung -> ns-3]
 ```
 
-Tensor flow (batch B): `network [B,7]`, `semantic [B,5]`, `ladder [B,6,2]` → encoder →
-`state_tokens [B,k,d_model]` → (+ optional `text_ids`) → LLM → `hidden [B,T,d_model]` →
-pool → `[B,d_model]` → head → `logits [B,6]`.
+Tensor flow (batch B): `network [B,W,9]`, `semantic [B,5]`, `ladder [B,6,2]` → encoder →
+`e_fused [B,256]` → `SoftTokenProjection` → `soft_tokens [B,k,H]` → (+ optional `text_emb`) → LLM
+(`inputs_embeds=`) → `hidden [B,k(+T),H]` → mean-pool over k → `[B,H]` → head → `logits [B,6]`.
+(v0 skips the projection+LLM: `e_fused → backbone_projector → head`.)
 
-**Approximate parameter budget:** encoder + heads ≈ 0.5–2 M trainable; LoRA adapters ≈
-0.5–2 % of backbone (a few M–tens of M); frozen backbone 0.5–7 B (not trained). So you
-train **single-digit to low-tens of millions** of params — appropriate for 12 K rows.
+**Approximate parameter budget:** encoder + soft-token projection + head ≈ 0.5–3 M trainable
+(the head is now `H`-dim for v1/v2, so a bit larger than v0's 256-dim head); LoRA adapters ≈
+0.5–2 % of backbone (a few M–tens of M); frozen backbone 1.5 B (not trained). So v2 trains
+**single-digit to low-tens of millions** of params — appropriate for 12 K rows. (v1 is the
+exception: the random LLM is fully trainable, ~1.5 B params.)
 
-**What changes between Tier 0 and Tier 1:** the encoder, heads, and `build_model_input`
-contract are **identical**; only the middle block (`backbone_projector` placeholder → real
-LLM + LoRA) swaps. So Tier 0 is a strict subset and a clean baseline — exactly how
-`model.py` is already structured.
+**What changes between Tier 0 and Tier 1:** the encoder (`e_fused [B,256]`), the
+`build_model_input` contract, and the dataset are **identical**; v1/v2 add the
+`SoftTokenProjection` + LLM + LoRA in place of v0's placeholder `backbone_projector`, and the
+policy head's input dim changes 256→`H`. So Tier 0 is a strict sub-network and a clean baseline —
+exactly how `model.py` is structured (`variant` arg, shared `MultimodalEncoder`).
 
 ## 8. Training strategy
 
@@ -206,9 +224,10 @@ policy into a small MLP for deployment once trained (train big, serve small).
 
 ## 10. Recommendation & staged plan
 
-1. **Lock Tier 0 baseline.** Finish `model.py` as encoder + attn-pooled ladder + policy
-   head (drop the placeholder); wire `missing_masks`; run SFT. This is your control and may
-   be competitive on its own.
+1. **Lock Tier 0 baseline.** `model.py` is the encoder + ladder pool + policy head with the
+   placeholder `backbone_projector` kept as the `variant="v0"` path (it stays — v1/v2 add the
+   `SoftTokenProjection` alongside rather than replacing the encoder); `missing_masks` are wired;
+   run SFT. This is your control and may be competitive on its own.
 2. **Decide the input question (§3).** If richer semantic/text context is available, go
    Tier 1 hybrid; if only 5 scalars exist, document that the LLM must justify itself on
    priors/generalization alone.

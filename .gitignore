@@ -24,6 +24,10 @@
 simulation_results/*
 *.slurm
 *.sh
+.venv
+scratch/ai_llm/checkpoints/
+scratch/ai_llm/slurm/
+scratch/ai_llm/__pycache__/
 
 [D|U]l[A-Z][a-z]*Stats.txt
 seventh-packet-byte-count.png
@@ -49,3 +53,7 @@ build/
 /.project
 .vscode
 train_jsonl
+# Derived / large artifacts (model binaries, holdout split symlinks) — regenerable, not tracked.
+/checkpoints/
+scratch/ai_llm/checkpoints_holdout/
+/train_jsonl_holdout/

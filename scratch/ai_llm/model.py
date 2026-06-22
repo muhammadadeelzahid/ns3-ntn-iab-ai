@@ -13,7 +13,15 @@ except ImportError:
     nn = None
 
 
-DEFAULT_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+
+# Variants of the ABR policy (see docs/benchmark-plan.md §1):
+#   v0 = no-LLM encoder -> placeholder projector -> head (the strict sub-network).
+#   v1 = random-initialized LLM, full fine-tune (isolates pretrained knowledge).
+#   v2 = pretrained LLM, frozen + LoRA, numeric soft-tokens (the Tier-1 workhorse).
+#   v3 = v2 + content-derived language text concatenated with the soft-tokens (the language channel).
+VARIANTS = ("v0", "v1", "v2", "v3")
+DEFAULT_SOFT_TOKENS = 4
 
 try:
     from ai_llm.paths import NUM_LADDER_RUNGS
@@ -24,6 +32,74 @@ except ImportError:
 def _require_torch() -> None:
     if torch is None or nn is None:
         raise RuntimeError("PyTorch is required for LLM policy inference/training.")
+
+
+def build_llm_backbone(
+    variant: str,
+    model_id: str = DEFAULT_MODEL_ID,
+    qlora_4bit: bool = True,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+):
+    """Construct the transformer backbone for an LLM variant.
+
+    Returns ``(llm_module, hidden_size)``. Heavy deps (transformers/peft/bitsandbytes)
+    are imported lazily here so the v0 / CPU path never needs them.
+
+    - v2/v3: pretrained ``model_id``, base frozen + LoRA adapters (QLoRA 4-bit optional).
+      v3 is architecturally identical to v2 here — they differ only in the input sequence
+      assembled in ``LlmAbrModel.forward`` (v3 concatenates text-token embeddings).
+    - v1: same config as ``model_id`` but **random-initialized** and **fully trainable**.
+    """
+    _require_torch()
+    if variant not in ("v1", "v2", "v3"):
+        raise ValueError("build_llm_backbone is only for v1/v2/v3, got %r" % variant)
+
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    if variant in ("v2", "v3"):
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+
+        quant_config = None
+        if qlora_4bit:
+            from transformers import BitsAndBytesConfig
+
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+        base = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            quantization_config=quant_config,
+        )
+        if qlora_4bit:
+            base = prepare_model_for_kbit_training(base)
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=[
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ],
+        )
+        llm = get_peft_model(base, lora_config)
+        hidden_size = base.config.hidden_size
+    else:  # v1: random init, all weights trainable
+        config = AutoConfig.from_pretrained(model_id)
+        llm = AutoModelForCausalLM.from_config(config, torch_dtype=torch.bfloat16)
+        llm.gradient_checkpointing_enable()
+        for param in llm.parameters():
+            param.requires_grad = True
+        hidden_size = config.hidden_size
+
+    return llm, hidden_size
 
 
 if nn is not None:
@@ -110,12 +186,39 @@ if nn is not None:
             return self.bitrate_head(x), None
 
 
+    class SoftTokenProjection(nn.Module):
+        """Map the encoder's fused embedding into the LLM token-embedding space.
+
+        ``e_fused [B, d_fuse]`` -> ``Linear(d_fuse -> k*H)`` -> ``soft_tokens [B, k, H]``.
+        These k vectors are injected as a prefix via the LLM's ``inputs_embeds=``
+        (bypassing the tokenizer). Kept as a separate module from the encoder so the
+        encoder stays identical across all variants and v0 is a strict sub-network.
+        """
+
+        def __init__(self, d_fuse: int, num_tokens: int, hidden_size: int) -> None:
+            super(SoftTokenProjection, self).__init__()
+            self.num_tokens = num_tokens
+            self.hidden_size = hidden_size
+            self.proj = nn.Linear(d_fuse, num_tokens * hidden_size)
+
+        def forward(self, e_fused: "torch.Tensor") -> "torch.Tensor":
+            batch = e_fused.shape[0]
+            flat = self.proj(e_fused)                      # [B, k*H]
+            return flat.view(batch, self.num_tokens, self.hidden_size)  # [B, k, H]
+
+
     class LlmAbrModel(nn.Module):
         """
-        Phase-2 model:
-        - Lightweight multimodal encoder
-        - Placeholder backbone projection (kept explicit for future HF backbone integration)
-        - ABR policy head
+        Multimodal ABR policy with four variants (docs/benchmark-plan.md §4):
+
+        - **v0**: encoder -> backbone_projector (placeholder) -> head. No LLM. The
+          strict sub-network; state-dict keys are unchanged from the original model.
+        - **v1/v2**: encoder -> SoftTokenProjection -> LLM (inputs_embeds) -> pool over
+          the k soft tokens -> head. v2 = pretrained frozen+LoRA, v1 = random full-FT.
+        - **v3**: v2 + a per-video language string. The LLM input sequence is
+          ``concat(soft_tokens[k], text_emb[L])`` (text embedded via the LLM's own
+          ``get_input_embeddings()``), masked-mean-pooled over real positions -> head.
+          Architecturally identical to v2 (frozen+LoRA); only the input sequence differs.
         """
 
         def __init__(
@@ -126,32 +229,117 @@ if nn is not None:
             d_model: int = 256,
             num_classes: int = NUM_LADDER_RUNGS,
             model_id: str = DEFAULT_MODEL_ID,
+            variant: str = "v0",
+            soft_tokens: int = DEFAULT_SOFT_TOKENS,
+            qlora_4bit: bool = True,
+            lora_r: int = 16,
+            lora_alpha: int = 32,
+            lora_dropout: float = 0.05,
+            llm: Optional["nn.Module"] = None,
+            hidden_size: Optional[int] = None,
         ) -> None:
             super(LlmAbrModel, self).__init__()
+            if variant not in VARIANTS:
+                raise ValueError("variant must be one of %s, got %r" % (VARIANTS, variant))
             self.model_id = model_id
+            self.variant = variant
+            self.soft_tokens = soft_tokens
             self.encoder = MultimodalEncoder(
                 network_dim=network_dim,
                 semantic_dim=semantic_dim,
                 ladder_dim=ladder_dim,
                 d_model=d_model,
             )
-            # Explicit backbone projection hook for later Qwen/Llama integration.
-            self.backbone_projector = nn.Sequential(
-                nn.Linear(d_model, d_model),
-                nn.SiLU(),
-                nn.LayerNorm(d_model),
-            )
-            self.policy_head = AbrPolicyHead(d_model=d_model, num_classes=num_classes)
+
+            if variant == "v0":
+                # Explicit placeholder projection: keeps v0 a strict sub-network and its
+                # checkpoint keys stable. No LLM is loaded.
+                self.backbone_projector = nn.Sequential(
+                    nn.Linear(d_model, d_model),
+                    nn.SiLU(),
+                    nn.LayerNorm(d_model),
+                )
+                self.llm = None
+                self.soft_proj = None
+                self.policy_head = AbrPolicyHead(d_model=d_model, num_classes=num_classes)
+            else:
+                # Allow a prebuilt llm/hidden_size to be injected (e.g. tiny config for
+                # smoke tests); otherwise build the real backbone lazily.
+                if llm is None or hidden_size is None:
+                    llm, hidden_size = build_llm_backbone(
+                        variant=variant,
+                        model_id=model_id,
+                        qlora_4bit=qlora_4bit,
+                        lora_r=lora_r,
+                        lora_alpha=lora_alpha,
+                        lora_dropout=lora_dropout,
+                    )
+                self.llm = llm
+                self.hidden_size = hidden_size
+                self.soft_proj = SoftTokenProjection(d_model, soft_tokens, hidden_size)
+                self.policy_head = AbrPolicyHead(d_model=hidden_size, num_classes=num_classes)
+
+        def _llm_dtype(self) -> "torch.dtype":
+            try:
+                return next(self.llm.parameters()).dtype
+            except StopIteration:
+                return torch.float32
 
         def forward(
             self,
             network_norm: "torch.Tensor",
             semantic_norm: "torch.Tensor",
             ladder_context: "torch.Tensor",
+            language_ids: Optional["torch.Tensor"] = None,
+            language_mask: Optional["torch.Tensor"] = None,
         ) -> Tuple["torch.Tensor", Optional["torch.Tensor"]]:
-            state_token = self.encoder(network_norm, semantic_norm, ladder_context)
-            state_hidden = self.backbone_projector(state_token)
-            return self.policy_head(state_hidden)
+            e_fused = self.encoder(network_norm, semantic_norm, ladder_context)  # [B, d_fuse]
+
+            if self.variant == "v0":
+                state_hidden = self.backbone_projector(e_fused)
+                return self.policy_head(state_hidden)
+
+            # v1/v2/v3: inject soft tokens as a prefix via inputs_embeds (no input_ids).
+            soft = self.soft_proj(e_fused)                       # [B, k, H]
+            soft = soft.to(self._llm_dtype())
+            batch, k = soft.shape[0], soft.shape[1]
+            attn = torch.ones(batch, k, dtype=torch.long, device=soft.device)
+
+            if self.variant == "v3" and language_ids is not None:
+                # Concatenate per-video language-token embeddings after the k numeric soft tokens:
+                #   seq = [soft_0 .. soft_{k-1}, text_0 .. text_{L-1}], attn = [1*k, language_mask].
+                # Text is embedded via the LLM's own input embeddings (frozen weights), so the
+                # world-knowledge tokens share the backbone's semantic space with the soft tokens.
+                text_emb = self.llm.get_input_embeddings()(language_ids).to(soft.dtype)  # [B, L, H]
+                inputs_embeds = torch.cat([soft, text_emb], dim=1)                       # [B, k+L, H]
+                if language_mask is None:
+                    language_mask = torch.ones(
+                        batch, text_emb.shape[1], dtype=torch.long, device=soft.device
+                    )
+                attn = torch.cat([attn, language_mask.to(attn.dtype)], dim=1)            # [B, k+L]
+                out = self.llm(
+                    inputs_embeds=inputs_embeds,
+                    attention_mask=attn,
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+                last_hidden = out.hidden_states[-1]              # [B, k+L, H], final layer
+                # Masked mean-pool over real (non-pad) positions so pad text tokens don't dilute
+                # the pooled state.
+                mask = attn.unsqueeze(-1).to(last_hidden.dtype)  # [B, k+L, 1]
+                pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+                return self.policy_head(pooled.float())
+
+            # v1/v2: soft tokens only, plain mean over the k tokens (unchanged from before).
+            out = self.llm(
+                inputs_embeds=soft,
+                attention_mask=attn,
+                output_hidden_states=True,
+                use_cache=False,
+            )
+            last_hidden = out.hidden_states[-1]                  # [B, k, H], final layer
+            pooled = last_hidden.mean(dim=1).float()             # mean-pool over k tokens
+            return self.policy_head(pooled)
 
 
 def create_model(**kwargs):

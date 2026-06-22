@@ -11,6 +11,7 @@
  */
 
 #include "ai-dash-client.h"
+#include "../mpeg-header.h" // MPEG_FRAMES_PER_SEGMENT / MPEG_TIME_BETWEEN_FRAMES
 #include "ns3/log.h"
 #include "ns3/simulator.h"
 #include "ns3/ai-module.h" // ns3-ai headers
@@ -190,7 +191,12 @@ AiDashClient::CalcNextSegment(uint32_t currRate, uint32_t& nextRate, Time& delay
   const double throughputStdBps = ComputeThroughputStd();
   const double segmentFetchTimeS = GetSegmentFetchTime();
   const Time now = Simulator::Now();
-  constexpr double kSegmentDurationS = 2.0; // Each metadata segment represents 2 seconds.
+  // Segment duration must match the oracle/training value (3.3 s). Derive it from the MPEG frame
+  // constants (same formula as DashClient) so it can never drift from the rest of the pipeline:
+  // 100 frames * 33 ms / 1000 = 3.3 s. Feeds only download_time_ratio (a diagnostic, not a model
+  // input), so this is a consistency fix, not a behavior change.
+  constexpr double kSegmentDurationS =
+      MPEG_FRAMES_PER_SEGMENT * MPEG_TIME_BETWEEN_FRAMES / 1000.0;
   cpp2py->node_id              = GetNode()->GetId();
   cpp2py->segment_id           = m_segmentId;
   cpp2py->sim_time_s           = now.GetSeconds();

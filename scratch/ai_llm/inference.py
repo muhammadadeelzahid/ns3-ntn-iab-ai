@@ -3,6 +3,7 @@
 Inference-time ABR policy wrappers.
 """
 
+import os
 from collections import deque
 from typing import Deque, Dict, List, Optional
 
@@ -17,18 +18,22 @@ try:
         load_scaler,
         network_observation,
         normalize_network_vector,
+        normalize_network_vector_with_masks,
+        SENTINEL_MASK_ORDER,
     )
     from ai_llm.model import create_model
-    from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
+    from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NETWORK_DIM, NS3_RATE_LADDER_BPS
 except ImportError:
     from features import (
         build_model_input,
         load_scaler,
         network_observation,
         normalize_network_vector,
+        normalize_network_vector_with_masks,
+        SENTINEL_MASK_ORDER,
     )
     from model import create_model
-    from paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
+    from paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NETWORK_DIM, NS3_RATE_LADDER_BPS
 
 
 class PolicyDecision:
@@ -103,9 +108,10 @@ class LlmAbrPolicy:
         checkpoint_path: Optional[str] = None,
         network_scaler_path: str = DEFAULT_NETWORK_SCALER,
         semantic_scaler_path: str = DEFAULT_SEMANTIC_SCALER,
-        model_id: str = "Qwen/Qwen2.5-7B-Instruct",
+        model_id: str = "Qwen/Qwen2.5-1.5B-Instruct",
         device: Optional[str] = None,
         window: int = 1,
+        use_missing_masks: bool = True,
     ) -> None:
         self.ladder_bps = ladder_bps or list(NS3_RATE_LADDER_BPS)
         self.network_scaler_path = network_scaler_path
@@ -118,6 +124,9 @@ class LlmAbrPolicy:
         # size is pinned from the checkpoint when present (so inference matches training);
         # the constructor value is the default/override.
         self._window = max(1, int(window))
+        # Missing-indicator channels (RTT/loss); also pinned from the checkpoint so the
+        # live network_dim matches the trained one.
+        self._use_missing_masks = bool(use_missing_masks)
         self._net_scaler = load_scaler(network_scaler_path)
         self._history: Dict[int, Deque[Dict[str, float]]] = {}
 
@@ -136,20 +145,48 @@ class LlmAbrPolicy:
                 self._device = device
             elif torch.cuda.is_available():
                 self._device = "cuda"
+            # Read checkpoint metadata first so window + missing-mask flag (hence
+            # network_dim) and the variant/backbone match training before construction.
+            ckpt = None
+            variant = "v0"
+            soft_tokens = 4
+            if self.checkpoint_path:
+                ckpt = torch.load(self.checkpoint_path, map_location=self._device)
+                if isinstance(ckpt, dict):
+                    if "window" in ckpt:
+                        self._window = max(1, int(ckpt["window"]))  # match training window
+                    if "use_missing_masks" in ckpt:
+                        self._use_missing_masks = bool(ckpt["use_missing_masks"])
+                    variant = ckpt.get("variant", "v0")
+                    soft_tokens = int(ckpt.get("soft_tokens", 4))
+                    if ckpt.get("model_id"):
+                        self.model_id = ckpt["model_id"]
+            network_dim = NETWORK_DIM + (len(SENTINEL_MASK_ORDER) if self._use_missing_masks else 0)
             self._model = create_model(
-                network_dim=7,
+                network_dim=network_dim,
                 semantic_dim=5,
                 ladder_dim=2,
                 d_model=256,
                 num_classes=len(self.ladder_bps),
                 model_id=self.model_id,
+                variant=variant,
+                soft_tokens=soft_tokens,
             ).to(self._device)
             self._model.eval()
-            if self.checkpoint_path:
-                ckpt = torch.load(self.checkpoint_path, map_location=self._device)
-                if isinstance(ckpt, dict) and "window" in ckpt:
-                    self._window = max(1, int(ckpt["window"]))  # match training window
+            if ckpt is not None:
                 state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+                # v2: reattach the trained LoRA adapter saved next to the checkpoint
+                # (the frozen base was reloaded from HF inside create_model).
+                if variant == "v2":
+                    adapter_dir = str(self.checkpoint_path) + ".lora"
+                    if os.path.isdir(adapter_dir) and hasattr(self._model.llm, "load_adapter"):
+                        try:
+                            self._model.llm.load_adapter(adapter_dir, adapter_name="default")
+                        except Exception:  # pylint: disable=broad-except
+                            self._model.llm.load_state_dict(  # fallback: merged weights in state
+                                state, strict=False,
+                            )
+                # encoder + soft_proj + head (and v1 full LLM) load from the state dict.
                 self._model.load_state_dict(state, strict=False)
             self._ready = True
         except Exception as exc:  # pylint: disable=broad-except
@@ -158,9 +195,11 @@ class LlmAbrPolicy:
             self._model = None
 
     def _network_window(self, state) -> List[List[float]]:
-        """Append this UE's raw observation to its ring buffer and return [W, 7].
+        """Append this UE's raw observation to its ring buffer and return [W, 7] (or
+        [W, 9] when missing-masks are enabled).
 
         Left-pads with the earliest available observation until the buffer holds W steps.
+        Uses the same helper as the train loader so the channel order matches exactly.
         """
         node = int(getattr(state, "node_id", 0))
         buf = self._history.get(node)
@@ -171,7 +210,8 @@ class LlmAbrPolicy:
         window = list(buf)
         if len(window) < self._window:
             window = [window[0]] * (self._window - len(window)) + window
-        return [normalize_network_vector(o, self._net_scaler) for o in window]
+        norm = normalize_network_vector_with_masks if self._use_missing_masks else normalize_network_vector
+        return [norm(o, self._net_scaler) for o in window]
 
     def reset_history(self) -> None:
         """Clear per-UE windows (call between independent runs/episodes)."""
@@ -193,8 +233,8 @@ class LlmAbrPolicy:
             if torch is None:
                 raise RuntimeError("torch_unavailable")
             # Network branch uses the time-series window; semantic + ladder are current-segment.
-            net_window = self._network_window(state)  # [W, 7]
-            network_t = torch.tensor([net_window], dtype=torch.float32, device=self._device)  # [1, W, 7]
+            net_window = self._network_window(state)  # [W, 7] or [W, 9] with masks
+            network_t = torch.tensor([net_window], dtype=torch.float32, device=self._device)  # [1, W, C]
             semantic_t = torch.tensor([model_input.semantic_norm], dtype=torch.float32, device=self._device)
             ladder_t = torch.tensor([model_input.ladder_context], dtype=torch.float32, device=self._device)
             with torch.inference_mode():

@@ -13,34 +13,34 @@
     "last_segment_bitrate_bps"
   ],
   "mean": [
-    16.588212987162407,
-    28.59941569980188,
-    2.4288056124830777,
-    0.5787183985306258,
-    13.033188301577855,
-    60.373266381623075,
-    21.27031255993066
+    16.44431040612707,
+    23.155435070939625,
+    2.4920808953497304,
+    0.5576872322544268,
+    12.760090256723167,
+    61.1779760614663,
+    25.60439760465393
   ],
   "std": [
-    1.8768066857820187,
-    30.169849197313766,
-    1.758154718726091,
-    1.8600852332255726,
-    4.477389967662832,
-    59.326605321893766,
-    194.39686139736204
+    1.8593864892750642,
+    24.479698997770072,
+    1.6615125539109192,
+    1.530977466967496,
+    4.7330188044611665,
+    58.54278071185849,
+    206.49470517710236
   ],
-  "source": "/tmp/patched.jsonl",
-  "fitted_at": "2026-06-15T15:43:07.279403+00:00",
-  "n_rows": 12114,
-  "n_files": 1,
+  "source": "/home/adeel/projects/def-ekram/adeel/ns3-ntn-iab/train_jsonl/train/*_run_*.jsonl",
+  "fitted_at": "2026-06-20T21:40:15.690601+00:00",
+  "n_rows": 32811,
+  "n_files": 385,
   "per_feature_fit_count": {
-    "throughput_estimate_bps": 12114,
-    "buffer_level_s": 12114,
-    "buffer_differential_s": 12114,
-    "segment_fetch_time_s": 12114,
-    "last_segment_bitrate_bps": 12114,
-    "smoothed_rtt_ms": 5964,
-    "loss_rate_recent": 12114
+    "throughput_estimate_bps": 32811,
+    "buffer_level_s": 32811,
+    "buffer_differential_s": 32811,
+    "segment_fetch_time_s": 32811,
+    "last_segment_bitrate_bps": 32811,
+    "smoothed_rtt_ms": 16204,
+    "loss_rate_recent": 32811
   }
 }

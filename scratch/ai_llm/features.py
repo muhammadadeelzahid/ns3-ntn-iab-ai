@@ -5,6 +5,8 @@ Feature assembly and normalization for LLM ABR policy.
 
 import json
 import math
+import os
+import warnings
 from typing import Dict, List, Optional
 
 try:
@@ -40,6 +42,11 @@ SEMANTIC_FEATURE_NAMES: List[str] = [
 
 SENTINEL_REPLACEMENT_FEATURES = {"smoothed_rtt_ms", "loss_rate_recent"}
 
+# Fixed order of the missing-indicator (0/1) channels appended after the z-scored network
+# features when masks are enabled. Order is frozen for train/inference parity; the model's
+# network_dim grows by len(SENTINEL_MASK_ORDER) (7 -> 9) when these are fed in.
+SENTINEL_MASK_ORDER = ["smoothed_rtt_ms", "loss_rate_recent"]
+
 
 class ModelInput:
     """
@@ -69,6 +76,13 @@ class ModelInput:
 
 def _load_scaler(path: Optional[str]) -> Optional[Dict[str, List[float]]]:
     if not path:
+        return None
+    if not os.path.exists(path):
+        # Schema v2: extraction/build runs before scalers are fit (Stage 4c), and normalization
+        # happens at load time. A missing scaler must degrade to identity (raw), never crash —
+        # this is what let the whole trace campaign fail before. (Inference, where the scaler is
+        # deployed alongside the checkpoint, still loads it normally.)
+        warnings.warn("Scaler not found at %s; using identity (raw) normalization." % path)
         return None
     with open(path, "r", encoding="utf-8") as handle:
         scaler = json.load(handle)
@@ -251,6 +265,19 @@ def load_scaler(path: Optional[str]) -> Optional[Dict[str, List[float]]]:
 def normalize_network_vector(observation: Dict[str, float], scaler: Optional[Dict]) -> List[float]:
     """Z-score (+ log on log_features) one raw network observation. `scaler` is a loaded dict."""
     return _normalize_network(observation, scaler)[0]
+
+
+def normalize_network_vector_with_masks(
+    observation: Dict[str, float], scaler: Optional[Dict]
+) -> List[float]:
+    """Mask-aware variant: the z-scored network vector plus one 0/1 missing-indicator per
+    sentinel feature (in `SENTINEL_MASK_ORDER`), appended *after* z-scoring (masks are
+    categorical, not scaled). Returns length len(features) + len(SENTINEL_MASK_ORDER)
+    (7 + 2 = 9). Shared by the train loader and live inference so the channel order is
+    identical on both paths.
+    """
+    values, masks = _normalize_network(observation, scaler)
+    return list(values) + [float(masks.get(name, 0.0)) for name in SENTINEL_MASK_ORDER]
 
 
 def normalize_semantic_vector(semantic_raw: Dict[str, float], scaler: Optional[Dict]) -> List[float]:

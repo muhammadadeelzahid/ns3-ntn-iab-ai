@@ -204,7 +204,10 @@ def build_records(
 ) -> List[Dict]:
     sim_log = find_sim_log(run_dir)
     manifest = load_run_manifest(run_dir)
-    metadata = load_metadata_index(metadata_csv, semantic_scaler)
+    # Schema v2 stores only raw `semantic_raw` in the output; the normalized vector is derived at
+    # load time (train/eval) with the Stage-4c scaler. So extraction must NOT load a scaler — that
+    # was a dead v1 leftover that crashed when the scaler JSON was absent. Pass None (identity).
+    metadata = load_metadata_index(metadata_csv, None)
 
     decisions = parse_decisions(str(sim_log))
 
@@ -529,8 +532,10 @@ def main() -> None:
         help="Output JSONL (default: <run-dir>/trace_decisions.jsonl).",
     )
     parser.add_argument("--run-id", default=None, help="Run id label (default: run directory name).")
-    parser.add_argument("--semantic-scaler", default=DEFAULT_SEMANTIC_SCALER)
-    parser.add_argument("--network-scaler", default=DEFAULT_NETWORK_SCALER)
+    # Schema v2: extraction is scaler-free (raw only; normalization happens at load time). These are
+    # kept for signature compatibility but default to None so extraction never needs a scaler JSON.
+    parser.add_argument("--semantic-scaler", default=None)
+    parser.add_argument("--network-scaler", default=None)
     parser.add_argument(
         "--artifacts-root",
         help="Batch mode: artifact root (e.g. Quic_artifacts).",

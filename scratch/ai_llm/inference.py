@@ -171,6 +171,10 @@ class LlmAbrPolicy:
                 model_id=self.model_id,
                 variant=variant,
                 soft_tokens=soft_tokens,
+                # V2/V3 were trained as bf16 LoRA (no bitsandbytes). create_model defaults to 4-bit
+                # QLoRA, which needs bitsandbytes and would fail at serve time — load in bf16 to match
+                # training (mirrors evaluate.py:load_policy_model).
+                qlora_4bit=False,
             ).to(self._device)
             self._model.eval()
             if ckpt is not None:

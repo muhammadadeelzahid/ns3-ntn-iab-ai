@@ -52,6 +52,10 @@ class MetadataIndex:
     def get(self, segment_index: int) -> Optional[SegmentMetadata]:
         return self._rows.get(segment_index)
 
+    def segment_ids(self) -> list:
+        """Sorted first-pass segment ids (ascending). Used to map looped/overflow ids."""
+        return sorted(self._rows.keys())
+
     def __len__(self) -> int:
         return len(self._rows)
 

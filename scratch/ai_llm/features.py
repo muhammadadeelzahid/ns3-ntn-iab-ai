@@ -212,9 +212,13 @@ def build_model_input(
 
     observation = _build_observation_dict(state)
     network_norm, missing_masks = _normalize_network(observation, network_scaler)
+    # TRAIN/SERVE PARITY: always re-derive semantic from raw + the CURRENT scaler. The metadata's
+    # baked `semantic_norm` was computed with a stale scaler, so passing it (the previous behavior)
+    # fed the live model different values than training/eval, collapsing it to a degenerate output.
+    # This mirrors build_model_input_from_row() (the offline twin), which already forces None.
     semantic_norm = _normalize_semantic(
         semantic_raw=getattr(segment_meta, "semantic_raw", {}),
-        semantic_norm=getattr(segment_meta, "semantic_norm", None),
+        semantic_norm=None,
         semantic_scaler=semantic_scaler,
     )
     ladder_context = _build_ladder_context(segment_meta)

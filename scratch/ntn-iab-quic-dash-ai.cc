@@ -546,6 +546,10 @@ void LogTime()
 // ---- ns3-ai: DASH ABR shared-memory IPC (Python must create shared memory first) ----
 namespace {
 bool g_dashAiEnabled{true};
+// Optional unique prefix for the ns3-ai shared-memory object names (set via --shmPrefix). Lets
+// several ns-3 IPC runs share ONE node without colliding on the default "My Seg" — so every GPU on
+// a multi-GPU node can host its own run. Empty = the legacy default names (single run per node).
+std::string g_shmPrefix{""};
 
 void
 ConfigureDashAiMsgInterface()
@@ -555,7 +559,16 @@ ConfigureDashAiMsgInterface()
     iface->SetUseVector(false); // one ABR decision per segment (struct mode)
     iface->SetHandleFinish(true);
     iface->SetMemorySize(4096);
-    iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
+    if (g_shmPrefix.empty())
+    {
+        iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
+    }
+    else
+    {
+        // Must match the names the Python side (run_ai_dash_llm.py) passes to Experiment(...).
+        iface->SetNames(g_shmPrefix + "_seg", g_shmPrefix + "_c2p",
+                        g_shmPrefix + "_p2c", g_shmPrefix + "_lock");
+    }
 }
 } // namespace
 
@@ -748,8 +761,13 @@ main (int argc, char *argv[])
   std::string dashMetadataCsv = "../abr/output/metadata/hiking_segments.csv";
   std::string dashMetadataTrace = "";
   uint32_t rlcBufSize = 50;  // Increased from 10 to 50 MB to prevent RLC buffer overflows and packet drops
-  uint32_t interPacketInterval = 10000; 
+  uint32_t interPacketInterval = 10000;
   uint32_t packetSize = 1400; //bytes // Decreased from 1500 to 1400 to avoid IP fragmentation (packet < MTU - headers)
+  // S1-U feeder (gNB/satellite <-> EPC core) bottleneck data rate. Default 100Gb/s = effectively
+  // unlimited (no congestion). Set a narrow value (e.g. "15Mbps") to make the satellite-to-core
+  // backhaul the shared bottleneck so a few UEs already congest it — the NTN-appropriate way to
+  // stress-test ABR policies without simulating many flows. (NOT the cloud-side internet hop.)
+  std::string linkRate = "100Gb/s";
   cmd.AddValue("aiEnable",
                "Enable ns3-ai DASH ABR shared-memory IPC (requires Python driver to create shared memory first)",
                g_dashAiEnabled);
@@ -762,6 +780,8 @@ main (int argc, char *argv[])
   cmd.AddValue("am", "RLC AM if true", rlcAm);
   cmd.AddValue("numRelay", "Number of relays", numRelays);
   cmd.AddValue("numUes", "Number of UE nodes/users", numUes);
+  cmd.AddValue("linkRate", "S1-U feeder (satellite<->core) bottleneck data rate, e.g. 15Mbps (default 100Gb/s = uncongested)", linkRate);
+  cmd.AddValue("shmPrefix", "Unique prefix for the ns3-ai shared-memory names (empty=default 'My Seg'; set to run multiple IPC jobs per node)", g_shmPrefix);
   cmd.AddValue("rlcBufSize", "RLC buffer size [MB]", rlcBufSize);
   cmd.AddValue("intPck", "interPacketInterval [us]", interPacketInterval);
 
@@ -993,6 +1013,10 @@ main (int argc, char *argv[])
   // Config::SetDefault ("ns3::MmWavePhyMacCommon::SymbolsPerSubframe", UintegerValue(240));
   // Config::SetDefault ("ns3::MmWavePhyMacCommon::SubframePeriod", DoubleValue(1000));
   // Config::SetDefault ("ns3::MmWavePhyMacCommon::SymbolPeriod", DoubleValue(1000/240));
+  // Throttle the S1-U feeder (gNB/satellite <-> EPC core) to the CLI linkRate (default 100Gb/s =
+  // uncongested). This is the satellite-to-core backhaul; narrowing it (e.g. 15Mbps) makes it the
+  // shared bottleneck for all UEs so ABR decisions become hard. Must precede epcHelper creation.
+  Config::SetDefault ("ns3::MmWavePointToPointEpcHelper::S1uLinkDataRate", DataRateValue (DataRate (linkRate)));
   Ptr<MmWaveHelper> mmwaveHelper = CreateObject<MmWaveHelper> ();
   Ptr<MmWavePointToPointEpcHelper>  epcHelper = CreateObject<MmWavePointToPointEpcHelper> ();
   mmwaveHelper->SetEpcHelper (epcHelper);

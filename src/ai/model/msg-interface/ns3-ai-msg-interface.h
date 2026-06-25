@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -303,6 +304,15 @@ class Ns3AiMsgInterfaceImpl
  * \brief The message interface, a singleton class
  */
 
+// Read a shared-memory object name from an environment variable, falling back to the default. This
+// lets several ns3-ai job pairs run on the SAME node with UNIQUE shm names (set NS3AI_*_NAME on the
+// Python side; the spawned ns-3 process inherits the env), instead of all colliding on "My Seg".
+inline std::string Ns3AiShmEnvOr(const char* key, const char* fallback)
+{
+    const char* v = std::getenv(key);
+    return (v && v[0]) ? std::string(v) : std::string(fallback);
+}
+
 class Ns3AiMsgInterface : public Singleton<Ns3AiMsgInterface>
 {
   public:
@@ -383,10 +393,10 @@ class Ns3AiMsgInterface : public Singleton<Ns3AiMsgInterface>
     bool m_useVector;
     bool m_handleFinish;
     uint32_t m_size = 4096;
-    std::string m_segmentName = "My Seg";
-    std::string m_cpp2pyMsgName = "My Cpp to Python Msg";
-    std::string m_py2cppMsgName = "My Python to Cpp Msg";
-    std::string m_lockableName = "My Lockable";
+    std::string m_segmentName = Ns3AiShmEnvOr("NS3AI_SEG_NAME", "My Seg");
+    std::string m_cpp2pyMsgName = Ns3AiShmEnvOr("NS3AI_C2P_NAME", "My Cpp to Python Msg");
+    std::string m_py2cppMsgName = Ns3AiShmEnvOr("NS3AI_P2C_NAME", "My Python to Cpp Msg");
+    std::string m_lockableName = Ns3AiShmEnvOr("NS3AI_LOCK_NAME", "My Lockable");
 };
 
 } // namespace ns3

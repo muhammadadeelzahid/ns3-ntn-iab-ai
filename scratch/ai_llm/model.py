@@ -189,10 +189,16 @@ if nn is not None:
     class SoftTokenProjection(nn.Module):
         """Map the encoder's fused embedding into the LLM token-embedding space.
 
-        ``e_fused [B, d_fuse]`` -> ``Linear(d_fuse -> k*H)`` -> ``soft_tokens [B, k, H]``.
+        ``e_fused [B, d_fuse]`` -> ``Linear(d_fuse -> k*H)`` -> LayerNorm -> ``soft_tokens [B, k, H]``.
         These k vectors are injected as a prefix via the LLM's ``inputs_embeds=``
         (bypassing the tokenizer). Kept as a separate module from the encoder so the
         encoder stays identical across all variants and v0 is a strict sub-network.
+
+        The per-token LayerNorm is ESSENTIAL (NetLLM, SIGCOMM'24 §4): without it the raw
+        projection emits tokens ~11x the magnitude of the frozen LLM's real token embeddings,
+        which are far out-of-distribution -> the frozen LLM saturates and training collapses to
+        the majority class. LayerNorm rescales each token to the embedding distribution so the
+        signal survives the frozen LLM and the encoder/LoRA receive usable gradient.
         """
 
         def __init__(self, d_fuse: int, num_tokens: int, hidden_size: int) -> None:
@@ -200,11 +206,13 @@ if nn is not None:
             self.num_tokens = num_tokens
             self.hidden_size = hidden_size
             self.proj = nn.Linear(d_fuse, num_tokens * hidden_size)
+            self.norm = nn.LayerNorm(hidden_size)
 
         def forward(self, e_fused: "torch.Tensor") -> "torch.Tensor":
             batch = e_fused.shape[0]
-            flat = self.proj(e_fused)                      # [B, k*H]
-            return flat.view(batch, self.num_tokens, self.hidden_size)  # [B, k, H]
+            flat = self.proj(e_fused)                              # [B, k*H]
+            tokens = flat.view(batch, self.num_tokens, self.hidden_size)  # [B, k, H]
+            return self.norm(tokens)                               # per-token LayerNorm -> in-distribution scale
 
 
     class LlmAbrModel(nn.Module):
@@ -237,6 +245,7 @@ if nn is not None:
             lora_dropout: float = 0.05,
             llm: Optional["nn.Module"] = None,
             hidden_size: Optional[int] = None,
+            encoder_residual: bool = True,
         ) -> None:
             super(LlmAbrModel, self).__init__()
             if variant not in VARIANTS:
@@ -277,13 +286,37 @@ if nn is not None:
                 self.llm = llm
                 self.hidden_size = hidden_size
                 self.soft_proj = SoftTokenProjection(d_model, soft_tokens, hidden_size)
-                self.policy_head = AbrPolicyHead(d_model=hidden_size, num_classes=num_classes)
+                # Encoder residual skip (default ON). The frozen 1.5B LLM throttles gradient to the
+                # encoder, so the encoder/soft-tokens collapse to a constant and the head learns the
+                # class prior (majority-rung) — empirically confirmed: V0 (encoder->head, no LLM)
+                # trains, but inserting the frozen LLM collapses it across every LR/LoRA/LayerNorm
+                # config. Concatenating the encoder's discriminative fused embedding with the pooled
+                # LLM output gives the head a DIRECT (un-throttled) path to the encoder signal so it
+                # cannot collapse to the prior, while the LLM+LoRA path still receives gradient and
+                # refines on top. Ablate via encoder_residual=False (or zero the pooled LLM output)
+                # to measure the LLM's marginal contribution. (IAA inner-adaptor / multimodal-adapter
+                # residual pattern; arXiv:2408.12902.)
+                self.encoder_residual = encoder_residual
+                self.d_model = d_model
+                head_dim = hidden_size + d_model if encoder_residual else hidden_size
+                self.policy_head = AbrPolicyHead(d_model=head_dim, num_classes=num_classes)
 
         def _llm_dtype(self) -> "torch.dtype":
             try:
                 return next(self.llm.parameters()).dtype
             except StopIteration:
                 return torch.float32
+
+        def _combine(self, pooled: "torch.Tensor", e_fused: "torch.Tensor") -> "torch.Tensor":
+            """Append the encoder's fused embedding to the pooled LLM output (residual skip).
+
+            Gives the policy head a direct, gradient-un-throttled view of the discriminative
+            encoder signal so it cannot collapse to the class prior. No-op if encoder_residual
+            is False (the pure-LLM-path ablation).
+            """
+            if getattr(self, "encoder_residual", False):
+                return torch.cat([pooled, e_fused.float()], dim=-1)
+            return pooled
 
         def forward(
             self,
@@ -328,7 +361,7 @@ if nn is not None:
                 # the pooled state.
                 mask = attn.unsqueeze(-1).to(last_hidden.dtype)  # [B, k+L, 1]
                 pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
-                return self.policy_head(pooled.float())
+                return self.policy_head(self._combine(pooled.float(), e_fused))
 
             # v1/v2: soft tokens only, plain mean over the k tokens (unchanged from before).
             out = self.llm(
@@ -339,7 +372,7 @@ if nn is not None:
             )
             last_hidden = out.hidden_states[-1]                  # [B, k, H], final layer
             pooled = last_hidden.mean(dim=1).float()             # mean-pool over k tokens
-            return self.policy_head(pooled)
+            return self.policy_head(self._combine(pooled, e_fused))
 
 
 def create_model(**kwargs):

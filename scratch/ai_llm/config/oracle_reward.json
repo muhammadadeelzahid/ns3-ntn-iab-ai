@@ -1,11 +1,11 @@
 {
-  "version": "semantic-dp-diverse",
-  "description": "Diversity-tuned reward profile for scripts/dp_oracle.py. Reduces rung-5 collapse via softer VMAF greed (w_vmaf), stronger switch/stall costs, a linear rung prior (w_rung), and conservative throughput planning (throughput_planning_factor) for buffer transitions.",
+  "version": "semantic-dp-pureqoe",
+  "description": "Pure-QoE reward profile for scripts/dp_oracle.py: quality (w_vmaf*VMAF) - stall (w_stall) - switch (w_switch*|dVMAF|). w_rung=0: the artificial linear rung prior (a label-balancing hack for the abandoned macro-F1 framing) is REMOVED so the oracle = standard ABR QoE ceiling (max quality without stalling). Rung diversity in the dataset now comes from the linkRate-sweep network conditions, not an artificial bitrate penalty. Conservative throughput planning (throughput_planning_factor) for buffer transitions.",
   "reward_weights": {
     "w_vmaf": 0.65,
     "w_stall": 18.0,
     "w_switch": 0.8,
-    "w_rung": 6.0,
+    "w_rung": 0.0,
     "scene_cut_discount": 0.65,
     "w_quality_sensitive": 0.0
   },

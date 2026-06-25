@@ -3,6 +3,7 @@
 *.patch
 *.rej
 .cache/
+cache/
 *.o
 *.pyc
 *.pyo
@@ -57,3 +58,7 @@ train_jsonl
 /checkpoints/
 scratch/ai_llm/checkpoints_holdout/
 /train_jsonl_holdout/
+# Local training-variant checkpoint dirs + benchmark run outputs — regenerable, not tracked.
+scratch/ai_llm/checkpoints_*/
+scratch/ai_llm/benchmark/results/
+scratch/ai_llm/benchmark/*_run_map.txt

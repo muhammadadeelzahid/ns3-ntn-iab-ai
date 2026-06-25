@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-LLM-oriented DASH ABR orchestrator (inference path).
+LLM-oriented DASH ABR orchestrator (inference path) — runs under Python 3.6.
 
 Drives ns-3's AiDashClient over the ns3-ai shared-memory IPC: receives per-segment
-player/network state, runs the trained policy (LlmAbrPolicy: V0 MLP head, or V1/V2 with the
-LLM backbone) on the looked-up segment metadata, and returns a bitrate decision. Falls back to
-the FDASH heuristic on missing metadata or any policy error.
+player/network state and returns a bitrate decision. The policy itself (torch / transformers)
+cannot live in this interpreter — the ns3-ai binding is a `cpython-36m` module, while torch
+needs Python 3.11 — so this process is **torch-free** and delegates each decision to a
+long-lived 3.11 inference server (`ai_llm/inference_server.py`) over a stdin/stdout JSON pipe.
+Falls back to the in-process FDASH heuristic on missing metadata, a policy error, or no server.
 """
 
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -22,10 +25,24 @@ sys.path.insert(0, os.path.join(NS3_ROOT, "build", "src", "ai", "examples", "abr
 from ns3ai_utils import Experiment  # type: ignore
 import ns3ai_abr_dash_ai_py as py_binding  # type: ignore
 
+# torch-free imports only (paths is pure pathlib; fdash_heuristic is pure-python math).
 from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
-from ai_llm.metadata_loader import load_metadata_index
-from ai_llm.inference import LlmAbrPolicy
 from run_ai_dash_heuristic import fdash_heuristic
+
+# The 19 Cpp2Py state fields populated in ai-dash-client.cc::CalcNextSegment (the order is not
+# significant — they are sent by name). Serialized verbatim to the inference server each decision.
+CPP2PY_FIELDS = (
+    "node_id", "segment_id", "sim_time_s", "segment_fetch_time_s", "throughput_estimate_bps",
+    "buffer_level_s", "buffer_differential_s", "current_bitrate_bps", "prev_bitrate_bps",
+    "player_state", "interruption_time_s", "interruptions", "smoothed_rtt_ms", "loss_rate_recent",
+    "throughput_ema_bps", "throughput_std_bps", "download_time_ratio", "last_decision_delay_s",
+    "bitrate_switch_count_recent",
+)
+
+
+def _state_to_dict(state) -> dict:
+    """Serialize the live Cpp2Py struct to a plain dict for the inference server."""
+    return {f: getattr(state, f, 0.0) for f in CPP2PY_FIELDS}
 
 
 def _bps_to_rung(bps: int) -> int:
@@ -37,6 +54,63 @@ def _bps_to_rung(bps: int) -> int:
             range(len(NS3_RATE_LADDER_BPS)),
             key=lambda i: abs(NS3_RATE_LADDER_BPS[i] - int(bps)),
         )
+
+
+def _spawn_inference_server(args):
+    """Launch the 3.11 torch inference server and block until its READY handshake.
+
+    Returns the Popen handle, or None if no checkpoint was given (pure-FDASH mode)."""
+    if not args.checkpoint:
+        print("[Python] No --checkpoint: running FDASH-only (no inference server).", flush=True)
+        return None
+    server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_llm",
+                                 "inference_server.py")
+    cmd = [
+        args.server_python, server_script,
+        "--checkpoint", args.checkpoint,
+        "--metadata", args.metadata,
+        "--network-scaler", args.network_scaler,
+        "--semantic-scaler", args.semantic_scaler,
+        "--model-id", args.model_id,
+        "--window", str(args.window),
+    ]
+    if args.device:
+        cmd += ["--device", args.device]
+    if not args.use_missing_masks:
+        cmd += ["--no-missing-masks"]
+    print("[Python] Spawning inference server: %s" % " ".join(cmd), flush=True)
+    server = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
+        universal_newlines=True, bufsize=1,
+    )
+    ready_line = server.stdout.readline()  # blocks until the model is loaded
+    try:
+        if not ready_line or not json.loads(ready_line).get("ready"):
+            raise RuntimeError("server did not signal READY (got %r)" % ready_line)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise RuntimeError("inference server failed to start: %s" % exc)
+    print("[Python] Inference server ready.", flush=True)
+    return server
+
+
+def _bridge_decision(server, state):
+    """Send one state to the inference server and return (chosen_bitrate_bps, delay_s, reason,
+    is_fallback). On any pipe/server problem, signal fallback so the caller runs FDASH."""
+    if server is None or server.poll() is not None:
+        return None, None, "fallback_no_server", True
+    try:
+        server.stdin.write(json.dumps(_state_to_dict(state)) + "\n")
+        server.stdin.flush()
+        resp_line = server.stdout.readline()
+        if not resp_line:
+            return None, None, "fallback_server_eof", True
+        resp = json.loads(resp_line)
+    except Exception as exc:  # pylint: disable=broad-except
+        return None, None, "fallback_bridge_error:%s" % exc, True
+    if resp.get("fallback"):
+        return None, None, "fallback_%s" % resp.get("reason", "server"), True
+    return int(resp["chosen_bitrate_bps"]), float(resp.get("delay_s", 0.0)), \
+        resp.get("reason", "bridge"), False
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,7 +146,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         default=None,
-        help="Torch device override (e.g., cpu, cuda).",
+        help="Torch device override (e.g., cpu, cuda) passed to the inference server.",
+    )
+    parser.add_argument(
+        "--server-python",
+        default=os.path.expanduser("~/abr-llm-venv/bin/python"),
+        help="Python 3.11 interpreter (with torch+transformers) used to run the inference "
+        "server. Default: ~/abr-llm-venv/bin/python.",
     )
     parser.add_argument(
         "--window",
@@ -97,6 +177,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--numUes", default="1", help="Number of UEs to simulate.")
     parser.add_argument("--run", default="1", help="RNG run index.")
+    parser.add_argument(
+        "--sim-stop-time", default=None,
+        help="Override the ns-3 simStopTime (seconds). Default: scenario default (90). "
+        "Use a small value for a quick smoke.",
+    )
+    parser.add_argument(
+        "--link-rate", default=None,
+        help="Backhaul bottleneck data rate (e.g. 20Mbps). Default: scenario default (100Gb/s = "
+        "uncongested). Narrow it to congest the link with few UEs for an ABR stress test.",
+    )
+    parser.add_argument(
+        "--shm-id", default=None,
+        help="Unique id for the ns3-ai shared-memory segment names (so multiple ns-3 IPC runs can "
+        "share a node). Default: $SLURM_JOB_ID, else the PID.",
+    )
     parser.add_argument(
         "--video",
         default=None,
@@ -134,17 +229,20 @@ def main() -> None:
     args = parse_args()
     os.environ["WAF_CMD"] = "python3 ./waf"
 
-    metadata_index = load_metadata_index(args.metadata, args.semantic_scaler)
-    policy = LlmAbrPolicy(
-        checkpoint_path=args.checkpoint,
-        network_scaler_path=args.network_scaler,
-        semantic_scaler_path=args.semantic_scaler,
-        model_id=args.model_id,
-        device=args.device,
-        window=args.window,
-        use_missing_masks=args.use_missing_masks,
-    )
-    print(f"[Python] Loaded metadata rows: {len(metadata_index)} from {args.metadata}", flush=True)
+    # The policy (torch) runs in a separate Python 3.11 server; this process stays torch-free.
+    # The server owns the metadata + scalers + model and answers one decision per request.
+    server = _spawn_inference_server(args)
+
+    # UNIQUE ns3-ai shared-memory names per job so MULTIPLE ns-3 IPC runs can share ONE node without
+    # colliding on the default "My Seg" (lets us use every GPU on a multi-GPU node). The Python side
+    # passes the names to Experiment(...); the ns-3 side gets the SAME prefix via the --shmPrefix CLI
+    # arg (in the setting dict) and rebuilds the matching names in ConfigureDashAiMsgInterface().
+    # Default tag = SLURM job id, else PID.
+    shm_id = args.shm_id or os.environ.get("SLURM_JOB_ID") or str(os.getpid())
+    shm_prefix = "abr_%s" % shm_id
+    seg, c2p, p2c, lock = (
+        shm_prefix + "_seg", shm_prefix + "_c2p", shm_prefix + "_p2c", shm_prefix + "_lock")
+    print("[Python] ns3-ai shm prefix (job-unique): %s" % shm_prefix, flush=True)
 
     exp = Experiment(
         "ntn-iab-quic-dash-ai",
@@ -153,24 +251,34 @@ def main() -> None:
         handleFinish=True,
         useVector=False,
         shmSize=4096,
+        segName=seg,
+        cpp2pyMsgName=c2p,
+        py2cppMsgName=p2c,
+        lockableName=lock,
     )
 
-    msg = exp.run(
-        setting={
-            "aiEnable": "true",
-            "numUes": str(args.numUes),
-            "run": str(args.run),
-            "algorithm": "ns3::AiDashClient",
-            "dashMetadataCsv": str(args.metadata),
-            "dashMetadataTrace": "dash_metadata_segments.csv",
-        },
-        show_output=True,
-    )
+    setting = {
+        "aiEnable": "true",
+        "numUes": str(args.numUes),
+        "run": str(args.run),
+        "algorithm": "ns3::AiDashClient",
+        "dashMetadataCsv": str(args.metadata),
+        "dashMetadataTrace": "dash_metadata_segments.csv",
+    }
+    if args.sim_stop_time is not None:
+        setting["simStopTime"] = str(args.sim_stop_time)
+    if args.link_rate is not None:
+        setting["linkRate"] = str(args.link_rate)
+    setting["shmPrefix"] = shm_prefix  # ns-3 side rebuilds the matching shm names from this
+    msg = exp.run(setting=setting, show_output=True)
 
     video = _resolve_video_name(args)
     decisions_path = _resolve_decisions_path(args, video)
     os.makedirs(os.path.dirname(decisions_path) or ".", exist_ok=True)
-    decision_records = []  # one dict per decision, written to JSONL at the end (for QoE replay)
+    decision_records = []  # one dict per decision (kept for the run summary count)
+    # Stream decisions to disk incrementally (flush per decision) so a SIGKILL / timeout / OOM
+    # leaves a recoverable partial JSONL instead of losing the whole run (finally won't run on SIGKILL).
+    decisions_fh = open(decisions_path, "w", encoding="utf-8")
 
     print("[Python] LLM ABR orchestrator started. video=%s decisions_out=%s"
           % (video, decisions_path), flush=True)
@@ -194,23 +302,14 @@ def main() -> None:
                 break
 
             state = msg.GetCpp2PyStruct()
-            segment_meta = metadata_index.get(int(state.segment_id))
 
             t0 = time.perf_counter()
-            if segment_meta is None:
+            # Delegate the decision to the 3.11 inference server; on any fallback signal
+            # (missing metadata, policy error, server gone) decide with the in-process FDASH.
+            chosen_bitrate, delay_s, reason, is_fallback = _bridge_decision(server, state)
+            if is_fallback:
                 chosen_bitrate, delay_s = fdash_heuristic(state)
-                reason = "fallback_missing_metadata"
                 fallback_count += 1
-            else:
-                try:
-                    decision = policy.predict(state, segment_meta)
-                    chosen_bitrate = int(decision.chosen_bitrate_bps)
-                    delay_s = float(decision.delay_s)
-                    reason = decision.reason
-                except Exception as exc:  # pylint: disable=broad-except
-                    chosen_bitrate, delay_s = fdash_heuristic(state)
-                    reason = f"fallback_policy_error:{exc}"
-                    fallback_count += 1
             latency_ms = (time.perf_counter() - t0) * 1000.0
 
             msg.PyRecvEnd()
@@ -223,7 +322,7 @@ def main() -> None:
             msg.PySendEnd()
 
             decisions += 1
-            decision_records.append({
+            rec = {
                 "sim_time_s": float(getattr(state, "sim_time_s", 0.0)),
                 "node_id": int(state.node_id),
                 "video": video,
@@ -234,9 +333,15 @@ def main() -> None:
                 "inference_latency_ms": latency_ms,
                 "throughput_estimate_bps": float(getattr(state, "throughput_estimate_bps", 0.0)),
                 "buffer_level_s": float(getattr(state, "buffer_level_s", 0.0)),
+                # Actual playout state (cumulative) from ns-3 — the ground-truth stall for QoE.
+                "interruption_time_s": float(getattr(state, "interruption_time_s", 0.0)),
+                "interruptions": int(getattr(state, "interruptions", 0)),
                 "smoothed_rtt_ms": float(getattr(state, "smoothed_rtt_ms", -1.0)),
                 "loss_rate_recent": float(getattr(state, "loss_rate_recent", -1.0)),
-            })
+            }
+            decision_records.append(rec)
+            decisions_fh.write(json.dumps(rec) + "\n")
+            decisions_fh.flush()
             print(
                 f"[Python][LLM] node={state.node_id} seg={state.segment_id} "
                 f"choice={action.chosen_bitrate_bps} delay={action.delay_s:.4f}s "
@@ -249,15 +354,22 @@ def main() -> None:
         print("[Python] Interrupted by user.", flush=True)
     finally:
         exp.kill()
-        # Persist the per-segment decisions for offline QoE replay (eval_qoe.py).
+        # Shut down the inference server (close its stdin -> EOF -> clean exit).
+        if server is not None:
+            try:
+                if server.stdin:
+                    server.stdin.close()
+                server.terminate()
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # Decisions were streamed + flushed to disk per-decision above (crash-resilient);
+        # just close the handle here so the file ends cleanly on a normal exit.
         try:
-            with open(decisions_path, "w", encoding="utf-8") as fh:
-                for rec in decision_records:
-                    fh.write(json.dumps(rec) + "\n")
+            decisions_fh.close()
             print("[Python] Wrote %d decisions -> %s" % (len(decision_records), decisions_path),
                   flush=True)
         except Exception as exc:  # pylint: disable=broad-except
-            print("[Python] WARN: failed to write decisions log: %s" % exc, flush=True)
+            print("[Python] WARN: failed to close decisions log: %s" % exc, flush=True)
         print(
             f"[Python] Experiment killed. decisions={decisions} fallbacks={fallback_count}",
             flush=True,

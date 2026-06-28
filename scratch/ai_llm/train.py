@@ -109,6 +109,8 @@ class AbrJsonlDataset(Dataset):
         use_missing_masks: bool = True,
         variant: str = "v0",
         language_cache: Optional[Dict[str, Tuple]] = None,
+        ablate_semantic: bool = False,
+        ladder_size_only: bool = False,
     ) -> None:
         self._network_scaler = network_scaler
         self._semantic_scaler = semantic_scaler
@@ -117,6 +119,10 @@ class AbrJsonlDataset(Dataset):
         # V3 only: per-video (input_ids[L], attention_mask[L]) tensors looked up by video_name.
         self._variant = variant
         self._language_cache = language_cache
+        # Input-ablation (content-channel study): zero the semantic branch and/or the ladder VMAF column
+        # so the model must fit the (greedy-reward) labels from network-only / network+VMAF / full inputs.
+        self._ablate_semantic = bool(ablate_semantic)
+        self._ladder_size_only = bool(ladder_size_only)
         # Load scalers once (dicts), reused for every timestep.
         self._net_scaler = load_scaler(network_scaler or DEFAULT_NETWORK_SCALER)
         self._sem_scaler = load_scaler(semantic_scaler or DEFAULT_SEMANTIC_SCALER)
@@ -204,7 +210,11 @@ class AbrJsonlDataset(Dataset):
         network_norm, semantic_norm, ladder_context = self._features(record)
         network = torch.tensor(network_norm, dtype=torch.float32)   # [W, 7] (W=1 -> [1,7])
         semantic = torch.tensor(semantic_norm, dtype=torch.float32)
-        ladder = torch.tensor(ladder_context, dtype=torch.float32)
+        ladder = torch.tensor(ladder_context, dtype=torch.float32)   # [6, 2] = [size, vmaf] per rung
+        if self._ablate_semantic:
+            semantic = torch.zeros_like(semantic)        # content-channel ablation: no semantic features
+        if self._ladder_size_only:
+            ladder[..., 1] = 0.0                         # drop per-rung VMAF, keep size
         label = int(record["teacher"][LABEL_FIELD_CLASS])
         if self._variant == "v3":
             lang_ids, lang_mask = self._language(record)
@@ -568,6 +578,14 @@ def main() -> None:
         action="store_false",
         help="Disable missing-indicator channels (mask-blind Tier-0 baseline for ablation).",
     )
+    parser.add_argument(
+        "--no-semantic", dest="ablate_semantic", action="store_true", default=False,
+        help="Content-channel ablation: zero the semantic-feature branch (net-only / +vmaf arms).",
+    )
+    parser.add_argument(
+        "--ladder-size-only", dest="ladder_size_only", action="store_true", default=False,
+        help="Content-channel ablation: zero the per-rung VMAF in the ladder (keep size) — net-only arm.",
+    )
     args = parser.parse_args()
 
     network_scaler = args.network_scaler or None
@@ -594,6 +612,8 @@ def main() -> None:
         use_missing_masks=args.use_missing_masks,
         variant=args.variant,
         language_cache=language_cache,
+        ablate_semantic=args.ablate_semantic,
+        ladder_size_only=args.ladder_size_only,
     )
     if args.val_data_dir:
         # Persisted, leakage-free split: train on --data-dir, validate on --val-data-dir.
@@ -608,6 +628,8 @@ def main() -> None:
             use_missing_masks=args.use_missing_masks,
             variant=args.variant,
             language_cache=language_cache,
+            ablate_semantic=args.ablate_semantic,
+            ladder_size_only=args.ladder_size_only,
         )
         train_ds = dataset
         print("Using persisted split: train=%s (%d rows), val=%s (%d rows)" % (

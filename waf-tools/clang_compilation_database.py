@@ -43,7 +43,10 @@ def write_compilation_database(ctx):
 	Logs.info("Build commands will be stored in %s" % database_file.path_from(ctx.path))
 	try:
 		root = json.load(database_file)
-	except IOError:
+	except (IOError, ValueError):
+		# ValueError/JSONDecodeError: another concurrent `waf --run` left compile_commands.json
+		# empty/half-written. This DB is an IDE convenience only, so tolerate the race and reset
+		# rather than crash the build (which previously killed concurrent bench jobs before ns-3 ran).
 		root = []
 	clang_db = dict((x["file"], x) for x in root)
 	for task in getattr(ctx, 'clang_compilation_database_tasks', []):

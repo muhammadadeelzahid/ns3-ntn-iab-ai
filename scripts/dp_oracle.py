@@ -257,10 +257,16 @@ def solve_session_dp(
     throughput_floor_bps = float(solver.get("throughput_floor_bps", 1e4))
     throughput_planning_factor = float(solver.get("throughput_planning_factor", 1.0))
 
+    n_src_segments = len(metadata._rows)  # type: ignore[attr-defined]  # source segs are 0..N-1
     traj: List[Dict] = []
     for row in session_rows:
         seg_id = int(row["segment_id"])
         meta = metadata.get(seg_id)
+        if meta is None and n_src_segments > 0:
+            # Looped playback: short videos replay to fill the sim cap (ns-3 AiDashClient loops natively).
+            # Map the overflow segment onto its source segment by position (seg_id % N) so its ladder
+            # VMAF/sizes are available — the label keeps the original (overflow) seg_id for the join.
+            meta = metadata.get(seg_id % n_src_segments)
         if meta is None:
             continue
         sizes = _ladder_sizes(meta, seg_id)

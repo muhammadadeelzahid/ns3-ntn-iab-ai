@@ -64,6 +64,28 @@ def _algo_rungs_from_log(sim_log: str) -> Dict[Tuple[int, int], int]:
     return out
 
 
+def _algo_rungs_from_decisions(decisions_jsonl: str) -> Dict[Tuple[int, int], int]:
+    """(node_id, segment_id0) -> the rung the bridge ABR actually delivered, from decisions.jsonl.
+
+    For the V2 (LLM) bridge arm there is no usable sim.log, but decisions.jsonl records the served
+    `chosen_rung` (post-guard) per decision. Segment ids are 1-indexed there; shift to the 0-indexed
+    teacher/metadata convention so the (node, seg) join matches the Converter-B shard exactly.
+    """
+    out: Dict[Tuple[int, int], int] = {}
+    with open(decisions_jsonl, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            seg = d.get("segment_id")
+            node = d.get("node_id")
+            if seg is None or node is None:
+                continue
+            out[(int(node), int(seg) - 1)] = int(d.get("chosen_rung", 0))
+    return out
+
+
 def _teacher_rows(jsonl: str) -> Dict[Tuple[int, int], Dict]:
     """(node_id, segment_id) -> full-teacher record (oracle label + realized throughput + VMAF ladder)."""
     out: Dict[Tuple[int, int], Dict] = {}
@@ -81,9 +103,15 @@ def _teacher_rows(jsonl: str) -> Dict[Tuple[int, int], Dict]:
     return out
 
 
-def score_run(sim_log: str, teacher_jsonl: str, reward_cfg: Dict, label: str = "") -> Optional[Dict]:
-    """Compute the perceptual-QoE metric set for one algorithm run (one video)."""
-    algo = _algo_rungs_from_log(sim_log)
+def score_run(sim_log: str, teacher_jsonl: str, reward_cfg: Dict, label: str = "",
+              decisions_jsonl: Optional[str] = None) -> Optional[Dict]:
+    """Compute the perceptual-QoE metric set for one algorithm run (one video).
+
+    Delivered rungs come from sim.log (classic C++ arms) or, for the V2 bridge arm, from
+    `decisions_jsonl` (chosen_rung) — everything downstream (oracle/floor replay, per-run
+    floor-normalized %-of-oracle) is identical, so the arms are scored the SAME way.
+    """
+    algo = _algo_rungs_from_decisions(decisions_jsonl) if decisions_jsonl else _algo_rungs_from_log(sim_log)
     rows_by_key = _teacher_rows(teacher_jsonl)
     # keep only decision points present in BOTH the log and the teacher records, grouped by node
     by_node: Dict[int, List[Tuple[int, Dict, int]]] = defaultdict(list)

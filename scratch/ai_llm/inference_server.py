@@ -47,6 +47,29 @@ def _bps_to_rung(bps: float) -> int:
     return min(range(len(NS3_RATE_LADDER_BPS)), key=lambda i: abs(NS3_RATE_LADDER_BPS[i] - bps))
 
 
+def _feasible_rung(throughput_bps: float, segment_meta, safety: float,
+                   buffer_s: float, seg_dur_s: float) -> int:
+    """Highest rung whose download won't underrun the buffer, given current throughput.
+
+    Download time of rung r = actual_bitrate[r]*seg_dur / throughput. To avoid a stall it must finish
+    before the buffer empties, so the no-stall budget on the bitrate is
+
+        actual_bitrate[r] <= throughput * max(buffer_s, seg_dur) / seg_dur * safety
+
+    At low buffer this reduces to ~throughput (strictly sustainable); at high buffer it scales up
+    (buffer can be spent), so steady-state buffer-spending is preserved while a single egregious
+    over-ask that would drain even a healthy buffer is blocked. Uses actual (VBR) bitrate — the bytes
+    really delivered — not the nominal ladder. Floor (0) if nothing fits.
+    """
+    head = max(buffer_s, seg_dur_s) / max(seg_dur_s, 1e-6)
+    budget = throughput_bps * head * safety
+    r = 0
+    for i, lvl in enumerate(LADDER_LEVELS):
+        if float(segment_meta.actual_bitrate_kbps.get(lvl, 0.0)) * 1000.0 <= budget:
+            r = i
+    return r
+
+
 def log(msg: str) -> None:
     print("[infserver] %s" % msg, file=sys.stderr, flush=True)
 
@@ -62,6 +85,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--window", type=int, default=1, help="Overridden by the checkpoint if present.")
     ap.add_argument("--use-missing-masks", dest="use_missing_masks", action="store_true", default=True)
     ap.add_argument("--no-missing-masks", dest="use_missing_masks", action="store_false")
+    # Buffer-dynamics-aware no-stall guard: cap the rung so its download won't underrun the buffer
+    # (actual_bitrate <= throughput * max(buffer,seg_dur)/seg_dur * safety). Always on; low buffer =>
+    # ~sustainable, high buffer => proportional buffer-spending. Catches the cold-start over-ask AND a
+    # single over-ask that would drain a healthy buffer. Disable with --guard-safety 0.
+    ap.add_argument("--guard-safety", type=float, default=0.9,
+                    help="Safety factor on the guard's no-stall bitrate budget (0=guard off).")
+    ap.add_argument("--guard-seg-dur-s", type=float, default=3.3,
+                    help="Segment duration (s) used in the guard's download-feasibility budget.")
     return ap.parse_args()
 
 
@@ -135,11 +166,25 @@ def main() -> None:
             state = SimpleNamespace(**req)
             try:
                 decision = policy.predict(state, segment_meta)
-                last_rung_by_node[node] = _bps_to_rung(float(decision.chosen_bitrate_bps))
+                chosen_bps = float(decision.chosen_bitrate_bps)
+                reason = decision.reason
+                # Buffer-dynamics-aware guard: clamp the rung so its download won't underrun the buffer
+                # given current throughput (no-stall feasibility). Always on (the buffer is inside the
+                # budget): low buffer => ~sustainable, high buffer => proportional spend. Catches both the
+                # cold-start over-ask AND a single egregious over-ask that would drain a healthy buffer.
+                buf = float(req.get("buffer_level_s", 0.0))
+                thr = float(req.get("throughput_estimate_bps", 0.0))
+                if args.guard_safety > 0.0 and thr > 0.0:
+                    chosen_rung = _bps_to_rung(chosen_bps)
+                    cap = _feasible_rung(thr, segment_meta, args.guard_safety, buf, args.guard_seg_dur_s)
+                    if chosen_rung > cap:
+                        chosen_bps = float(NS3_RATE_LADDER_BPS[cap])
+                        reason = "%s+guard(buf%.1f:r%d->r%d)" % (reason, buf, chosen_rung, cap)
+                last_rung_by_node[node] = _bps_to_rung(chosen_bps)
                 resp = {
-                    "chosen_bitrate_bps": int(decision.chosen_bitrate_bps),
+                    "chosen_bitrate_bps": int(chosen_bps),
                     "delay_s": float(decision.delay_s),
-                    "reason": decision.reason,
+                    "reason": reason,
                 }
             except Exception as exc:  # pylint: disable=broad-except
                 resp = {"fallback": True, "reason": "policy_error:%s" % exc}

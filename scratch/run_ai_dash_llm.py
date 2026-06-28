@@ -333,6 +333,11 @@ def main() -> None:
                 "inference_latency_ms": latency_ms,
                 "throughput_estimate_bps": float(getattr(state, "throughput_estimate_bps", 0.0)),
                 "buffer_level_s": float(getattr(state, "buffer_level_s", 0.0)),
+                # Full network observation (so decisions.jsonl can rebuild model-input rows for
+                # DAgger relabelling / scoring; last_segment_bitrate_bps is reconstructed offline from
+                # the previous segment's chosen rung + metadata, as inference_server does).
+                "buffer_differential_s": float(getattr(state, "buffer_differential_s", 0.0)),
+                "segment_fetch_time_s": float(getattr(state, "segment_fetch_time_s", 0.0)),
                 # Actual playout state (cumulative) from ns-3 — the ground-truth stall for QoE.
                 "interruption_time_s": float(getattr(state, "interruption_time_s", 0.0)),
                 "interruptions": int(getattr(state, "interruptions", 0)),

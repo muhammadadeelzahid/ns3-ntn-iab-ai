@@ -62,3 +62,12 @@ scratch/ai_llm/checkpoints_holdout/
 scratch/ai_llm/checkpoints_*/
 scratch/ai_llm/benchmark/results/
 scratch/ai_llm/benchmark/*_run_map.txt
+# generated paper output (figures/tables — regenerable via make_paper_*.py)
+scratch/ai_llm/benchmark/paper/
+# generated training-variant datasets (regenerable via relabel_*.py)
+train_jsonl_*/
+# snapshot/bench checkpoints (binary, regenerable)
+scratch/ai_llm/checkpoints_*.pt
+scratch/ai_llm/checkpoints_*.pt.lora/
+# midstream held-out eval outputs (regenerable)
+eval_midstream_heldout/

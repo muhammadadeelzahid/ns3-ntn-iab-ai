@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Per-video OFFLINE model rung distribution — the apples-to-apples reference for the congested
+"""Per-video OFFLINE model rung distribution - the apples-to-apples reference for the congested
 live sweep. Runs a trained V0/V2 checkpoint on the uncongested train_jsonl shards (same model,
 same feature path as evaluate.py) and reports, per video, the predicted-rung histogram + mean.
-This is the correct baseline for "does the model pick LOWER rungs under live congestion?" —
+This is the correct baseline for "does the model pick LOWER rungs under live congestion?" -
 NOT the DP-oracle teacher label (acausal, only loosely imitated)."""
 import argparse, json
 from collections import Counter, defaultdict

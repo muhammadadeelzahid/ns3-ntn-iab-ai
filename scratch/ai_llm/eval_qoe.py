@@ -2,8 +2,8 @@
 """Closed-loop QoE from live ns-3 runs (Phase 5 harness).
 
 Consumes the per-segment `decisions.jsonl` emitted by `run_ai_dash_llm.py` during a live
-AiDash run and computes the three core QoE pillars — delivered bitrate, rebuffering, and
-switching — per UE (`node_id`) and pooled. Unlike the offline `evaluate.py` replay (which
+AiDash run and computes the three core QoE pillars - delivered bitrate, rebuffering, and
+switching - per UE (`node_id`) and pooled. Unlike the offline `evaluate.py` replay (which
 models the player from a trace), these numbers come from the **actual ns-3 playout**: the
 chosen rung per segment and the cumulative stall (`interruption_time_s`) the simulator
 recorded, because the network genuinely reacted to the policy's choices.

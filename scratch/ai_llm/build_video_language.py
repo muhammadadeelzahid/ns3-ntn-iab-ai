@@ -5,10 +5,10 @@ What V3 needs
 -------------
 V3 = V2 + a content-derived natural-language string per video, embedded by the frozen LLM's
 own token embeddings and concatenated with the numeric soft tokens (see model.py / train.py).
-The string must be **world-knowledge / open-vocabulary** content (genre, title, content tags) —
+The string must be **world-knowledge / open-vocabulary** content (genre, title, content tags) -
 NOT the five numeric scalars re-spelled (the "redundancy rule", docs/benchmark-plan.md §4.5).
 The abr `video_catalog.yaml` already carries exactly this: a human `title`, content `tags`, and a
-coarse `genre` (reused from split_dataset_videos.genre_for) — deterministic, cheap, reproducible,
+coarse `genre` (reused from split_dataset_videos.genre_for) - deterministic, cheap, reproducible,
 no VLM. This script templates one string per video and writes `config/video_semantics.json`.
 
 Tokenization is intentionally **deferred to load time** (train.py / evaluate.py run the

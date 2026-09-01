@@ -23,7 +23,7 @@ MPEG_FRAMES_PER_SEGMENT = 100
 MPEG_FRAME_DURATION_MS = 33
 MPEG_SEGMENT_DURATION_S = MPEG_FRAMES_PER_SEGMENT * MPEG_FRAME_DURATION_MS / 1000.0
 
-# throughput_trace.jsonl (scripts/extract_throughput_traces.py) — raw keyed rows before aggregation.
+# throughput_trace.jsonl (scripts/extract_throughput_traces.py) - raw keyed rows before aggregation.
 THROUGHPUT_TRACE_REQUIRED_FIELDS = [
     "run_id",
     "node_id",
@@ -46,7 +46,7 @@ THROUGHPUT_TRACE_OPTIONAL_FIELDS = [
     "chosen_bitrate_bps",
 ]
 
-# aggregated_throughput.jsonl (scripts/aggregate_traces.py) — pooled per-video segment summaries.
+# aggregated_throughput.jsonl (scripts/aggregate_traces.py) - pooled per-video segment summaries.
 AGGREGATED_THROUGHPUT_REQUIRED_FIELDS = [
     "video_name",
     "segment_id",
@@ -71,7 +71,7 @@ AGGREGATED_THROUGHPUT_OPTIONAL_FIELDS = [
     "run_count",
 ]
 
-# oracle_labels_state.jsonl (scripts/dp_oracle.py) —
+# oracle_labels_state.jsonl (scripts/dp_oracle.py) -
 # per-segment supervised labels keyed by (run_id, node_id, segment_id).
 # Each row carries the optimal action under a semantic backward-DP rollout that
 # replays the run/node throughput trace with a buffer/stall transition model.

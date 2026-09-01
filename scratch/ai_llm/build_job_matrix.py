@@ -72,7 +72,7 @@ def main() -> None:
         video_name = video_name_from_csv(meta_path)
         for link_idx, link_rate in enumerate(link_rates):
             for i in range(args.runs_per_metadata):
-                # Unique run_seed per (link_rate, run) within a video → distinct artifact dir
+                # Unique run_seed per (link_rate, run) within a video -> distinct artifact dir
                 # (run_artifacts_dir is keyed by algo/video/run_seed) AND distinct RNG realization.
                 run_seed = args.run_offset + link_idx * args.runs_per_metadata + i
                 rows.append(

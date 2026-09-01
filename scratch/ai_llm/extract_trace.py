@@ -205,7 +205,7 @@ def build_records(
     sim_log = find_sim_log(run_dir)
     manifest = load_run_manifest(run_dir)
     # Schema v2 stores only raw `semantic_raw` in the output; the normalized vector is derived at
-    # load time (train/eval) with the Stage-4c scaler. So extraction must NOT load a scaler — that
+    # load time (train/eval) with the Stage-4c scaler. So extraction must NOT load a scaler - that
     # was a dead v1 leftover that crashed when the scaler JSON was absent. Pass None (identity).
     metadata = load_metadata_index(metadata_csv, None)
 

@@ -6,7 +6,7 @@ Reads the raw ``semantic_raw`` block from training JSONL rows (or, equivalently,
 semantic columns of the metadata CSVs) and writes ``config/feature_scaler_semantic.json``
 in the schema features.py expects (``feature_names``, ``mean``, ``std``) plus provenance.
 
-Parity with ``fit_network_scaler.py`` — but semantic features are plain z-scored: no
+Parity with ``fit_network_scaler.py`` - but semantic features are plain z-scored: no
 log transform, no sentinel handling. Run this whenever the metadata/corpus changes so the
 semantic normalization matches the data the model is trained and served on.
 """
@@ -22,7 +22,7 @@ import statistics
 from datetime import datetime, timezone
 from typing import Dict, List
 
-# Fixed order — must equal features.SEMANTIC_FEATURE_NAMES.
+# Fixed order - must equal features.SEMANTIC_FEATURE_NAMES.
 SEMANTIC_FEATURE_NAMES: List[str] = [
     "motion_score",
     "saliency_score",

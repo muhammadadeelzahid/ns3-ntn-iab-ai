@@ -48,7 +48,7 @@ def build_llm_backbone(
     are imported lazily here so the v0 / CPU path never needs them.
 
     - v2/v3: pretrained ``model_id``, base frozen + LoRA adapters (QLoRA 4-bit optional).
-      v3 is architecturally identical to v2 here — they differ only in the input sequence
+      v3 is architecturally identical to v2 here - they differ only in the input sequence
       assembled in ``LlmAbrModel.forward`` (v3 concatenates text-token embeddings).
     - v1: same config as ``model_id`` but **random-initialized** and **fully trainable**.
     """
@@ -189,16 +189,13 @@ if nn is not None:
     class SoftTokenProjection(nn.Module):
         """Map the encoder's fused embedding into the LLM token-embedding space.
 
-        ``e_fused [B, d_fuse]`` -> ``Linear(d_fuse -> k*H)`` -> LayerNorm -> ``soft_tokens [B, k, H]``.
-        These k vectors are injected as a prefix via the LLM's ``inputs_embeds=``
-        (bypassing the tokenizer). Kept as a separate module from the encoder so the
-        encoder stays identical across all variants and v0 is a strict sub-network.
+        e_fused [B, d_fuse] -> Linear(d_fuse -> k*H) -> LayerNorm -> soft_tokens [B, k, H],
+        injected as a prefix via the LLM inputs_embeds. Separate from the encoder so the
+        encoder stays identical across variants and v0 is a strict sub-network.
 
-        The per-token LayerNorm is ESSENTIAL (NetLLM, SIGCOMM'24 §4): without it the raw
-        projection emits tokens ~11x the magnitude of the frozen LLM's real token embeddings,
-        which are far out-of-distribution -> the frozen LLM saturates and training collapses to
-        the majority class. LayerNorm rescales each token to the embedding distribution so the
-        signal survives the frozen LLM and the encoder/LoRA receive usable gradient.
+        The per-token LayerNorm is required: without it the raw projection emits tokens far
+        larger than the frozen LLM's real embeddings, so the LLM saturates and training
+        collapses to the majority class. LayerNorm rescales each token to embedding scale.
         """
 
         def __init__(self, d_fuse: int, num_tokens: int, hidden_size: int) -> None:
@@ -286,16 +283,11 @@ if nn is not None:
                 self.llm = llm
                 self.hidden_size = hidden_size
                 self.soft_proj = SoftTokenProjection(d_model, soft_tokens, hidden_size)
-                # Encoder residual skip (default ON). The frozen 1.5B LLM throttles gradient to the
-                # encoder, so the encoder/soft-tokens collapse to a constant and the head learns the
-                # class prior (majority-rung) — empirically confirmed: V0 (encoder->head, no LLM)
-                # trains, but inserting the frozen LLM collapses it across every LR/LoRA/LayerNorm
-                # config. Concatenating the encoder's discriminative fused embedding with the pooled
-                # LLM output gives the head a DIRECT (un-throttled) path to the encoder signal so it
-                # cannot collapse to the prior, while the LLM+LoRA path still receives gradient and
-                # refines on top. Ablate via encoder_residual=False (or zero the pooled LLM output)
-                # to measure the LLM's marginal contribution. (IAA inner-adaptor / multimodal-adapter
-                # residual pattern; arXiv:2408.12902.)
+                # Encoder residual skip (default ON). The frozen LLM throttles gradient to the
+                # encoder, so without this the encoder collapses to a constant and the head learns
+                # the majority-rung prior. Concatenating the encoder's fused embedding with the
+                # pooled LLM output gives the head a direct path to the encoder signal, while the
+                # LLM+LoRA path still refines on top. Set encoder_residual=False to ablate.
                 self.encoder_residual = encoder_residual
                 self.d_model = d_model
                 head_dim = hidden_size + d_model if encoder_residual else hidden_size

@@ -39,7 +39,7 @@ import statistics
 from datetime import datetime, timezone
 from typing import Dict, List
 
-# Fixed feature order — must equal features.NETWORK_FEATURE_NAMES.
+# Fixed feature order - must equal features.NETWORK_FEATURE_NAMES.
 NETWORK_FEATURE_NAMES: List[str] = [
     "throughput_estimate_bps",
     "buffer_level_s",
@@ -114,7 +114,7 @@ def fit(data_dir: str, pattern: str, log_features: List[str]) -> Dict[str, objec
         vals = values[name]
         per_feature_count[name] = len(vals)
         if not vals:
-            # All sentinel / empty — neutral scaler for this column.
+            # All sentinel / empty - neutral scaler for this column.
             means.append(0.0)
             stds.append(1.0)
             continue

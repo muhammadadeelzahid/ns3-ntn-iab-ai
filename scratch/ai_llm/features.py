@@ -25,7 +25,7 @@ NETWORK_FEATURE_NAMES: List[str] = [
     "buffer_level_s",
     "buffer_differential_s",
     "segment_fetch_time_s",
-    # Actual encoded bitrate (VBR) of the last downloaded segment — replaces the
+    # Actual encoded bitrate (VBR) of the last downloaded segment - replaces the
     # nominal "current_bitrate_bps", which was a 1:1 restatement of the rung index.
     "last_segment_bitrate_bps",
     "smoothed_rtt_ms",
@@ -79,7 +79,7 @@ def _load_scaler(path: Optional[str]) -> Optional[Dict[str, List[float]]]:
         return None
     if not os.path.exists(path):
         # Schema v2: extraction/build runs before scalers are fit (Stage 4c), and normalization
-        # happens at load time. A missing scaler must degrade to identity (raw), never crash —
+        # happens at load time. A missing scaler must degrade to identity (raw), never crash -
         # this is what let the whole trace campaign fail before. (Inference, where the scaler is
         # deployed alongside the checkpoint, still loads it normally.)
         warnings.warn("Scaler not found at %s; using identity (raw) normalization." % path)
@@ -133,7 +133,7 @@ def _normalize_network(
         missing = 0.0
         if name in SENTINEL_REPLACEMENT_FEATURES and raw < 0.0:
             # Sentinel: impute to the fitted (already-transformed-space) mean and flag.
-            # Skip the log transform — means[idx] is in the scaler's target space.
+            # Skip the log transform - means[idx] is in the scaler's target space.
             value = means[idx]
             missing = 1.0
         else:
@@ -183,7 +183,7 @@ def _build_observation_dict(state) -> Dict[str, float]:
 
 
 def _build_ladder_context(segment_meta) -> List[List[float]]:
-    # Per rung: [size_bytes, vmaf]. actual_bitrate_kbps is dropped — it is a fixed
+    # Per rung: [size_bytes, vmaf]. actual_bitrate_kbps is dropped - it is a fixed
     # rescale of size_bytes (= size_bytes * 8 / 1000 / segment_duration, duration = 2s),
     # so it is perfectly collinear and adds no information. size_bytes is kept because
     # download_time = 8 * size_bytes / throughput uses it directly.

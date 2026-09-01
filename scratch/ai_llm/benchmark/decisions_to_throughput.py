@@ -4,7 +4,7 @@
 The live bridge writes per-run decisions.jsonl but NOT the ns-3 trace files (they clobber the repo
 root). To score / DAgger-relabel V2 online runs we reconstruct the throughput_trace.jsonl that
 dp_oracle consumes. throughput_bps must be the REALIZED channel rate (so dp_oracle + replay_session
-re-simulate downloads faithfully) — computed as the chosen rung's ACTUAL (VBR) segment bytes / the
+re-simulate downloads faithfully) - computed as the chosen rung's ACTUAL (VBR) segment bytes / the
 realized segment_fetch_time_s. (The logged throughput_estimate_bps is the ABR's lagged estimate, ~order
 of magnitude below the realized rate, and using it injects huge phantom stalls into replay_session.)
 Segment ids are shifted to 0-indexed; looped playback (short videos replaying to fill the sim cap) maps

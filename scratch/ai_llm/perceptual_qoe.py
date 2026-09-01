@@ -108,7 +108,7 @@ def score_run(sim_log: str, teacher_jsonl: str, reward_cfg: Dict, label: str = "
     """Compute the perceptual-QoE metric set for one algorithm run (one video).
 
     Delivered rungs come from sim.log (classic C++ arms) or, for the V2 bridge arm, from
-    `decisions_jsonl` (chosen_rung) — everything downstream (oracle/floor replay, per-run
+    `decisions_jsonl` (chosen_rung) - everything downstream (oracle/floor replay, per-run
     floor-normalized %-of-oracle) is identical, so the arms are scored the SAME way.
     """
     algo = _algo_rungs_from_decisions(decisions_jsonl) if decisions_jsonl else _algo_rungs_from_log(sim_log)
@@ -157,7 +157,7 @@ def score_run(sim_log: str, teacher_jsonl: str, reward_cfg: Dict, label: str = "
     n = int(seg_total)
     # Bounded % of oracle: clip policy into [floor, oracle] before normalizing, so an unbounded stall
     # penalty can't blow it up. Range [0,100]: 100% = optimal, 0% = no better than always-min (incl.
-    # catastrophic stalling — REGRET carries the magnitude of how-much-worse below floor).
+    # catastrophic stalling - REGRET carries the magnitude of how-much-worse below floor).
     span = ora_qoe - flr_qoe
     if span > 1e-6:
         clipped = min(ora_qoe, max(flr_qoe, pol_qoe))

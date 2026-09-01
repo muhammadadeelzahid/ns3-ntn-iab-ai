@@ -95,7 +95,7 @@ class AbrJsonlDataset(Dataset):
     Normalization is applied **at load time** from the raw `observation` / `semantic_raw`
     (the same scaler path inference uses). The network branch is fed a **time-series
     window** of the last `window` segments of the SAME session (`run_id`, `node_id`),
-    assembled here at load time — so the window size is a hyperparameter that needs no
+    assembled here at load time - so the window size is a hyperparameter that needs no
     dataset rebuild. `window=1` is the snapshot baseline. Semantic + ladder describe the
     current segment and are single-timestep.
     """
@@ -193,7 +193,7 @@ class AbrJsonlDataset(Dataset):
 
         Looked up by video_name from the precomputed cache. Videos absent from the cache (should
         not happen given 100% catalog coverage) degrade gracefully to an all-pad sequence, which
-        the model's masked pool ignores — equivalent to V2 for that row.
+        the model's masked pool ignores - equivalent to V2 for that row.
         """
         cache = self._language_cache or {}
         ids_mask = cache.get(record.get("video_name"))
@@ -256,7 +256,7 @@ def compute_class_weights(
     loss scale stays comparable to the unweighted run.
 
     ``power`` tempers the weighting: 1.0 = full inverse-frequency (can destabilize a small
-    head — it over-rewards the rare rungs and the optimizer ping-pongs between single-class
+    head - it over-rewards the rare rungs and the optimizer ping-pongs between single-class
     collapses); 0.5 = sqrt-inverse (gentler, usually more stable); 0.0 = uniform (no weighting).
     """
     counts = [0] * num_classes
@@ -584,7 +584,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--ladder-size-only", dest="ladder_size_only", action="store_true", default=False,
-        help="Content-channel ablation: zero the per-rung VMAF in the ladder (keep size) — net-only arm.",
+        help="Content-channel ablation: zero the per-rung VMAF in the ladder (keep size) - net-only arm.",
     )
     args = parser.parse_args()
 
@@ -669,7 +669,7 @@ def main() -> None:
     # head at --lr. The deep residual-free encoder is gradient-starved (~40x smaller grad than the
     # head); without its own higher LR the head collapses to the majority class. For V1/V2 the
     # `soft_proj` (encoder 256-d -> LLM 6144-d soft tokens) sits behind the frozen LLM, which
-    # attenuates its gradient the same way — so it joins the high-LR feature group, not the head.
+    # attenuates its gradient the same way - so it joins the high-LR feature group, not the head.
     # (Encoder fix validated by the overfit harness: 30x head LR drives a batch to ~0.12 loss/0.95 acc.)
     # Only requires_grad params are handed to the optimizer (frozen 4-bit base excluded).
     enc_params, soft_params, llm_params, head_params = [], [], [], []
@@ -749,7 +749,7 @@ def main() -> None:
         if warmup_steps > 0:
             # Linear warmup (LR ramps 1% -> 100% of each group's base over warmup_steps), then
             # cosine decay over the rest. A gentle start lets the encoder and head co-adapt before
-            # the head locks onto the majority class — reduces the seed-dependent collapse. All
+            # the head locks onto the majority class - reduces the seed-dependent collapse. All
             # param groups scale together, so the encoder:head LR ratio is preserved.
             warmup = torch.optim.lr_scheduler.LinearLR(
                 optimizer, start_factor=0.01, total_iters=warmup_steps

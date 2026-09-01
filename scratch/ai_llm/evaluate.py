@@ -4,7 +4,7 @@ QoE + imitation evaluation for the ABR policy variants (V0/V1/V2).
 
 This is **evaluation, not training**. It scores a trained policy's *deployed* behavior by
 replaying its chosen rungs through the same player/buffer model the DP oracle uses, then
-reports the combined QoE as a percentage of the per-session DP-oracle ceiling — the metric
+reports the combined QoE as a percentage of the per-session DP-oracle ceiling - the metric
 the benchmark's claims actually rest on (docs/benchmark-plan.md §5). Imitation metrics
 (macro-F1, per-class recall, confusion) are reported alongside but are *not* the headline.
 
@@ -219,7 +219,7 @@ def load_policy_model(checkpoint_path: str, device: str):
         model_id=model_id,
         soft_tokens=soft_tokens,
         # V1/V2 are trained in bf16 LoRA (train.py default, no bitsandbytes). create_model defaults
-        # to 4-bit QLoRA, which needs bitsandbytes and would crash at eval — load in bf16 to match.
+        # to 4-bit QLoRA, which needs bitsandbytes and would crash at eval - load in bf16 to match.
         qlora_4bit=False,
     ).to(device)
     model.eval()
@@ -262,7 +262,7 @@ def main() -> None:
     parser.add_argument("--semantic-scaler", default=DEFAULT_SEMANTIC_SCALER)
     parser.add_argument("--window", type=int, default=None, help="Override window (else read from checkpoint).")
     parser.add_argument("--include-video", action="append", default=None,
-                        help="Only evaluate these video_names (repeatable) — e.g. an unseen-content split.")
+                        help="Only evaluate these video_names (repeatable) - e.g. an unseen-content split.")
     parser.add_argument("--exclude-video", action="append", default=None)
     parser.add_argument("--tag", default="", help="Label printed with the results (e.g. split name).")
     parser.add_argument(

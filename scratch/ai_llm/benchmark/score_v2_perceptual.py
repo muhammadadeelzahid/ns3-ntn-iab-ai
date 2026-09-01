@@ -5,7 +5,7 @@ its %-of-oracle is directly comparable to the SVAA/SFTM/.../FDASH headline.
 Heuristics: sim.log delivered rungs + per-run teacher shard -> per-(video,run) floor-normalized %-oracle
 (perceptual_qoe.score_run) -> mean over runs per condition (aggregate_table). This does the same for V2 but
 sources delivered rungs from decisions.jsonl (chosen_rung) and the teacher shard from Converter-B
-(decisions_to_trainrows.py). Same score_run, same per-run floor-normalization, same per-condition mean —
+(decisions_to_trainrows.py). Same score_run, same per-run floor-normalization, same per-condition mean -
 the ONLY change is where delivered rungs come from. PREREQ: decisions_to_throughput -> dp_oracle
 (ALGO_SHORT=AiDash) -> decisions_to_trainrows already run so the teacher shards exist.
 
@@ -67,7 +67,7 @@ def main():
                 r["mean_vmaf"], r["mean_bitrate_mbps"], r["stall_s"], r["switches"]))
     print("wrote per-run results -> %s (%d runs)" % (results_out, len(run_rows)))
 
-    print("V2 (causal+guard) perceptual %-of-oracle — same path as heuristics (mean over runs per cond):")
+    print("V2 (causal+guard) perceptual %-of-oracle - same path as heuristics (mean over runs per cond):")
     print("  cond     | runs | %oracle | meanVMAF")
     all_pct = []
     for c in sorted(per_cond):

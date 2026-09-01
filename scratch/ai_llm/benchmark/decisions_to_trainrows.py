@@ -54,7 +54,7 @@ def main():
             continue
         # oracle: (run_id, node, seg0) -> full dp_oracle record (video-level file covers all runs).
         # Keep the WHOLE record (not just the rung) so the teacher carries semantic_weight / is_scene_cut /
-        # vmaf_chosen — replay_session's quality reward is w_vmaf*semantic_weight*vmaf, so dropping
+        # vmaf_chosen - replay_session's quality reward is w_vmaf*semantic_weight*vmaf, so dropping
         # semantic_weight zeroes V2's quality term (the bug that made the %-oracle read 0%).
         oracle = {}
         for l in open(orf):

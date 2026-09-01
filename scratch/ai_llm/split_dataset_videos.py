@@ -6,7 +6,7 @@ Why this exists
 Training must never be evaluated on data it learned from. `train.py`'s in-memory split is
 *by session* (so the same video lands in both train and val) and `evaluate.py` otherwise scores
 the entire corpus. Standard ML methodology requires three *disjoint* sets where validation/test
-are never trained on, the split is fixed *before* feature scaling, and — for time-series — no
+are never trained on, the split is fixed *before* feature scaling, and - for time-series - no
 sequence (here, a whole video) appears in more than one set.
 
 What it does
@@ -109,7 +109,7 @@ def discover_video_shards(data_dir: Path, glob_pattern: str) -> Dict[str, List[P
                     vid = None
                 break
         if vid is None:
-            print("  WARN: no video_name in %s — skipped" % shard.name, file=sys.stderr)
+            print("  WARN: no video_name in %s - skipped" % shard.name, file=sys.stderr)
             continue
         videos[vid].append(shard)
     return videos
@@ -195,6 +195,10 @@ def main() -> None:
                     help="Route ALL videos of this genre into a separate test_genre/ split (never "
                     "seen in train/val) for the unseen-content experiment. The remaining genres are "
                     "stratified into train/val/test as usual.")
+    ap.add_argument("--split-manifest", default=None,
+                    help="Path to a PINNED split manifest (JSON with videos:[{video_id, split}], e.g. "
+                    "the headroom-stratified stage_b_subset/manifest.json). If given, use that "
+                    "video->split assignment verbatim and bypass genre stratification.")
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir).resolve()
@@ -202,6 +206,37 @@ def main() -> None:
     shards_by_video = discover_video_shards(data_dir, args.glob_pattern)
     if not shards_by_video:
         raise SystemExit("No video shards found under %s/%s" % (data_dir, args.glob_pattern))
+
+    # Pinned-split path: honor an externally-computed video->split assignment verbatim.
+    if args.split_manifest:
+        with open(args.split_manifest, "r", encoding="utf-8") as fh:
+            pinned = json.load(fh)
+        assignment = {v["video_id"]: v["split"] for v in pinned.get("videos", [])}
+        splits = list(SPLITS)
+        counts_shards = materialize(out_dir, shards_by_video, assignment, splits)
+        split_videos = defaultdict(list)
+        for vid in shards_by_video:
+            split_videos[assignment.get(vid, "train")].append(vid)
+        missing = [v for v in sorted(shards_by_video) if v not in assignment]
+        manifest = {
+            "source_split_manifest": str(Path(args.split_manifest).resolve()),
+            "out_dir": str(out_dir),
+            "n_videos": len(shards_by_video),
+            "video_count_per_split": {sp: len(split_videos[sp]) for sp in splits},
+            "shard_count_per_split": counts_shards,
+            "shard_videos_not_in_manifest": missing,
+            "videos": {vid: {"split": assignment.get(vid, "train")} for vid in sorted(shards_by_video)},
+        }
+        with open(out_dir / "split_manifest.json", "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=2, sort_keys=True)
+        print("=== pinned split from %s ===" % args.split_manifest)
+        print("videos: %d  |  per-split videos: %s  |  per-split shards: %s" % (
+            len(shards_by_video), {sp: len(split_videos[sp]) for sp in splits}, counts_shards))
+        if missing:
+            print("NOTE: %d shard videos not in pinned manifest -> train: %s" % (
+                len(missing), missing[:10]))
+        print("manifest: %s" % (out_dir / "split_manifest.json"))
+        return
 
     genres = load_catalog_genres(args.catalog)
     # When a genre is held out, those videos bypass the stratified split entirely and land in

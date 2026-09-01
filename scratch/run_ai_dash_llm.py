@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-LLM-oriented DASH ABR orchestrator (inference path) — runs under Python 3.6.
+LLM-oriented DASH ABR orchestrator (inference path) - runs under Python 3.6.
 
 Drives ns-3's AiDashClient over the ns3-ai shared-memory IPC: receives per-segment
 player/network state and returns a bitrate decision. The policy itself (torch / transformers)
-cannot live in this interpreter — the ns3-ai binding is a `cpython-36m` module, while torch
-needs Python 3.11 — so this process is **torch-free** and delegates each decision to a
+cannot live in this interpreter - the ns3-ai binding is a `cpython-36m` module, while torch
+needs Python 3.11 - so this process is **torch-free** and delegates each decision to a
 long-lived 3.11 inference server (`ai_llm/inference_server.py`) over a stdin/stdout JSON pipe.
 Falls back to the in-process FDASH heuristic on missing metadata, a policy error, or no server.
 """
@@ -30,7 +30,7 @@ from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RA
 from run_ai_dash_heuristic import fdash_heuristic
 
 # The 19 Cpp2Py state fields populated in ai-dash-client.cc::CalcNextSegment (the order is not
-# significant — they are sent by name). Serialized verbatim to the inference server each decision.
+# significant - they are sent by name). Serialized verbatim to the inference server each decision.
 CPP2PY_FIELDS = (
     "node_id", "segment_id", "sim_time_s", "segment_fetch_time_s", "throughput_estimate_bps",
     "buffer_level_s", "buffer_differential_s", "current_bitrate_bps", "prev_bitrate_bps",
@@ -60,20 +60,28 @@ def _spawn_inference_server(args):
     """Launch the 3.11 torch inference server and block until its READY handshake.
 
     Returns the Popen handle, or None if no checkpoint was given (pure-FDASH mode)."""
-    if not args.checkpoint:
+    policy = getattr(args, "policy", "model")
+    if not args.checkpoint and policy == "model":
         print("[Python] No --checkpoint: running FDASH-only (no inference server).", flush=True)
         return None
     server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_llm",
                                  "inference_server.py")
     cmd = [
         args.server_python, server_script,
-        "--checkpoint", args.checkpoint,
         "--metadata", args.metadata,
         "--network-scaler", args.network_scaler,
         "--semantic-scaler", args.semantic_scaler,
         "--model-id", args.model_id,
         "--window", str(args.window),
+        "--policy", policy,
     ]
+    if args.checkpoint:
+        cmd += ["--checkpoint", args.checkpoint]
+    if policy == "greedy":
+        if getattr(args, "w_stall", None) is not None:
+            cmd += ["--w-stall", str(args.w_stall)]
+        if getattr(args, "thr_safety", None) is not None:
+            cmd += ["--thr-safety", str(args.thr_safety)]
     if args.device:
         cmd += ["--device", args.device]
     if not args.use_missing_masks:
@@ -161,6 +169,14 @@ def parse_args() -> argparse.Namespace:
         help="Time-series window (past segments per UE) for the network branch. "
         "Overridden by the checkpoint's window if present. 1 = snapshot.",
     )
+    parser.add_argument(
+        "--policy", choices=["model", "greedy"], default="model",
+        help="'model' = trained LLM policy; 'greedy' = causal greedy-reward teacher rule (no LLM).",
+    )
+    parser.add_argument("--w-stall", type=float, default=None,
+                        help="Override w_stall for --policy greedy.")
+    parser.add_argument("--thr-safety", type=float, default=None,
+                        help="Throughput safety factor for --policy greedy.")
     parser.add_argument(
         "--use-missing-masks",
         dest="use_missing_masks",
@@ -338,7 +354,7 @@ def main() -> None:
                 # the previous segment's chosen rung + metadata, as inference_server does).
                 "buffer_differential_s": float(getattr(state, "buffer_differential_s", 0.0)),
                 "segment_fetch_time_s": float(getattr(state, "segment_fetch_time_s", 0.0)),
-                # Actual playout state (cumulative) from ns-3 — the ground-truth stall for QoE.
+                # Actual playout state (cumulative) from ns-3 - the ground-truth stall for QoE.
                 "interruption_time_s": float(getattr(state, "interruption_time_s", 0.0)),
                 "interruptions": int(getattr(state, "interruptions", 0)),
                 "smoothed_rtt_ms": float(getattr(state, "smoothed_rtt_ms", -1.0)),

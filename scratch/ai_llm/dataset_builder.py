@@ -27,6 +27,7 @@ try:
     from ai_llm.decision_parser import parse_decisions
     from ai_llm.extract_trace import build_records, write_jsonl
     from ai_llm.features import build_model_input
+    from ai_llm.greedy_teacher import assign_greedy_labels, compute_semantic_weights, load_reward_config
     from ai_llm.metadata_loader import LADDER_LEVELS, load_metadata_index
     from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
     from ai_llm.trace_schema import ORACLE_LABELS_STATE_REQUIRED_FIELDS, SCHEMA_VERSION
@@ -34,6 +35,7 @@ except ImportError:
     from decision_parser import parse_decisions
     from extract_trace import build_records, write_jsonl
     from features import build_model_input
+    from greedy_teacher import assign_greedy_labels, compute_semantic_weights, load_reward_config
     from metadata_loader import LADDER_LEVELS, load_metadata_index
     from paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
     from trace_schema import ORACLE_LABELS_STATE_REQUIRED_FIELDS, SCHEMA_VERSION
@@ -296,6 +298,8 @@ def build_dataset_for_run(
     video_name: str,
     strict: bool,
     network_scaler: Optional[str] = None,
+    greedy_weights: Optional[Dict[int, float]] = None,
+    reward_weights: Optional[Dict] = None,
 ) -> Dict[str, object]:
     """Build one run JSONL. Returns summary stats."""
     if not (run_dir / "trace_decisions.jsonl").is_file() and not (run_dir / "sim.log").is_file():
@@ -311,6 +315,11 @@ def build_dataset_for_run(
     if not records:
         return {"skipped": True, "reason": "no records produced"}
 
+    # video_name is needed by the whole-video splitter; the oracle path sets it via
+    # attach_oracle_teacher, but fdash/greedy do not - set it here for all teacher sources.
+    for rec in records:
+        rec["video_name"] = video_name
+
     join_diag: Dict[str, object] = {}
     if teacher_source == "oracle":
         if oracle_table is None:
@@ -321,6 +330,11 @@ def build_dataset_for_run(
             video_name=video_name,
             strict=strict,
         )
+    elif teacher_source == "greedy":
+        if greedy_weights is None or reward_weights is None:
+            raise RuntimeError("greedy_weights + reward_weights required when teacher_source=greedy")
+        dist = assign_greedy_labels(records, greedy_weights, reward_weights)
+        join_diag = {"teacher": "greedy_reward", "rung_dist": dist}
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(records, output_path)
@@ -410,9 +424,13 @@ def build_catalog(
     run_glob: str,
     merge_output: Optional[Path] = None,
     network_scaler: Optional[str] = None,
+    reward_config: Optional[str] = None,
 ) -> Dict[str, object]:
     """Build JSONL for every run under artifacts_root/algo_short."""
     oracle_cache: Dict[str, Dict[Tuple[str, int, int], Dict]] = {}
+    # Greedy teacher: reward config loaded once; per-video semantic weights cached (min-max is per video).
+    greedy_cfg = load_reward_config(reward_config) if teacher_source == "greedy" else None
+    greedy_weight_cache: Dict[str, Dict[int, float]] = {}
     written = 0
     skipped = 0
     total_records = 0
@@ -441,6 +459,17 @@ def build_catalog(
                 oracle_cache[video_name] = load_oracle_labels(oracle_path, video_name)
             oracle_table = oracle_cache[video_name]
 
+        greedy_weights: Optional[Dict[int, float]] = None
+        reward_weights: Optional[Dict] = None
+        if teacher_source == "greedy":
+            if video_name not in greedy_weight_cache:
+                md = load_metadata_index(str(metadata_csv), None)
+                greedy_weight_cache[video_name] = compute_semantic_weights(
+                    md, greedy_cfg["semantic_weight_mixture"]
+                )
+            greedy_weights = greedy_weight_cache[video_name]
+            reward_weights = greedy_cfg["reward_weights"]
+
         try:
             stats = build_dataset_for_run(
                 run_dir=run_dir,
@@ -454,6 +483,8 @@ def build_catalog(
                 video_name=video_name,
                 strict=strict,
                 network_scaler=network_scaler,
+                greedy_weights=greedy_weights,
+                reward_weights=reward_weights,
             )
         except Exception as exc:
             failures += 1
@@ -589,9 +620,15 @@ def main() -> None:
     parser.add_argument("--scenario", default="ntn-iab-quic-dash-ai")
     parser.add_argument(
         "--teacher-source",
-        choices=["fdash", "oracle"],
+        choices=["fdash", "oracle", "greedy"],
         default="fdash",
-        help="Source of teacher labels: native FDASH decisions or dp_oracle.py labels.",
+        help="Teacher labels: native FDASH decisions, dp_oracle.py labels, or the greedy-reward "
+        "causal teacher computed in-build (ai_llm.greedy_teacher; no DP-oracle dependency).",
+    )
+    parser.add_argument(
+        "--reward-config",
+        default=None,
+        help="Reward config JSON for --teacher-source greedy (default: config/oracle_reward.json).",
     )
     parser.add_argument(
         "--oracle-labels",
@@ -625,6 +662,7 @@ def main() -> None:
             run_glob=args.run_glob,
             merge_output=merge_path,
             network_scaler=(args.network_scaler or None),
+            reward_config=args.reward_config,
         )
         return
 

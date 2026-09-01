@@ -3,8 +3,8 @@
 
 Why this exists
 ---------------
-The ns3-ai binding (`ns3ai_abr_dash_ai_py`) is a `cpython-36m` extension — importable ONLY by
-Python 3.6 — while the policy model needs torch 2.x + transformers (Python 3.11). The two cannot
+The ns3-ai binding (`ns3ai_abr_dash_ai_py`) is a `cpython-36m` extension - importable ONLY by
+Python 3.6 - while the policy model needs torch 2.x + transformers (Python 3.11). The two cannot
 live in one interpreter. So `run_ai_dash_llm.py` (3.6) keeps the ns-3 IPC loop and **spawns this
 server** (3.11), exchanging one line-delimited JSON message per decision over stdin/stdout:
 
@@ -16,7 +16,7 @@ stdout carries ONLY JSON responses (one per line); all human logs go to stderr. 
 line is a `{"ready": true}` handshake emitted once the (possibly slow) model load finishes.
 
 Because the ns-3 simulation is PAUSED while it waits for the decision, the pipe round-trip is free
-with respect to QoE — it only costs wall-clock.
+with respect to QoE - it only costs wall-clock.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ def _feasible_rung(throughput_bps: float, segment_meta, safety: float,
 
     At low buffer this reduces to ~throughput (strictly sustainable); at high buffer it scales up
     (buffer can be spent), so steady-state buffer-spending is preserved while a single egregious
-    over-ask that would drain even a healthy buffer is blocked. Uses actual (VBR) bitrate — the bytes
-    really delivered — not the nominal ladder. Floor (0) if nothing fits.
+    over-ask that would drain even a healthy buffer is blocked. Uses actual (VBR) bitrate - the bytes
+    really delivered - not the nominal ladder. Floor (0) if nothing fits.
     """
     head = max(buffer_s, seg_dur_s) / max(seg_dur_s, 1e-6)
     budget = throughput_bps * head * safety
@@ -70,6 +70,24 @@ def _feasible_rung(throughput_bps: float, segment_meta, safety: float,
     return r
 
 
+def _greedy_rung(thr, buf, sizes, vmafs, prev_vmaf, sem, cut, W) -> int:
+    """Closed-loop greedy-reward CAUSAL teacher as a serving policy (mirrors benchmark/relabel_greedy.py
+    greedy_rung EXACTLY, incl. the thr_safety download-time discount). Per segment, pick the rung that
+    maximises the immediate QoE reward using only present info, so this is the deployable causal ceiling
+    the LLM is trained to imitate. No no-stall guard (pure teacher)."""
+    thr_eff = max(thr * W.get("thr_safety", 1.0), 1.0)
+    best, bi = -1e18, 0
+    for r in range(len(LADDER_LEVELS)):
+        dl = 8.0 * sizes[r] / thr_eff
+        rebuf = max(0.0, dl - buf)
+        sw = 0.0 if prev_vmaf is None else W["w_switch"] * abs(vmafs[r] - prev_vmaf) * (1.0 - W["scene_cut_discount"] * cut)
+        q = W["w_vmaf"] * sem * vmafs[r] + W.get("w_quality_sensitive", 0.0) * sem * vmafs[r]
+        rew = q - W["w_stall"] * rebuf - sw
+        if rew > best:
+            best, bi = rew, r
+    return bi
+
+
 def log(msg: str) -> None:
     print("[infserver] %s" % msg, file=sys.stderr, flush=True)
 
@@ -77,6 +95,14 @@ def log(msg: str) -> None:
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Torch policy inference server (stdin/stdout JSON).")
     ap.add_argument("--checkpoint", default=None, help="Trained policy checkpoint (V0/V1/V2).")
+    ap.add_argument("--policy", choices=["model", "greedy"], default="model",
+                    help="'model' = trained LLM policy; 'greedy' = causal greedy-reward teacher rule "
+                         "(no LLM, no guard) - the deployable causal ceiling the model imitates.")
+    ap.add_argument("--reward-config", default=os.path.join(_HERE, "config", "oracle_reward.json"),
+                    help="Reward weights + semantic-weight mixture for --policy greedy.")
+    ap.add_argument("--w-stall", type=float, default=None, help="Override w_stall for --policy greedy.")
+    ap.add_argument("--thr-safety", type=float, default=None,
+                    help="Throughput safety factor for --policy greedy (discounts the estimate).")
     ap.add_argument("--metadata", required=True, help="Segment metadata CSV.")
     ap.add_argument("--network-scaler", default=DEFAULT_NETWORK_SCALER)
     ap.add_argument("--semantic-scaler", default=DEFAULT_SEMANTIC_SCALER)
@@ -103,28 +129,49 @@ def main() -> None:
     metadata_index = load_metadata_index(args.metadata, args.semantic_scaler)
     log("metadata rows: %d from %s" % (len(metadata_index), args.metadata))
     # Segment-id convention: ns-3's AiDashClient reports 1-indexed segment ids (first segment = 1),
-    # but the metadata index — and the training data (dataset_builder uses the 0-indexed trace
-    # segment_id) — are 0-indexed (segments 0..N-1). So the live lookup must subtract 1, otherwise the
+    # but the metadata index - and the training data (dataset_builder uses the 0-indexed trace
+    # segment_id) - are 0-indexed (segments 0..N-1). So the live lookup must subtract 1, otherwise the
     # policy is fed the NEXT segment's encoding ladder and the last segment overflows. (The earlier
     # 'looping/modulo' patch misdiagnosed this off-by-one and is removed.)
 
-    policy = LlmAbrPolicy(
-        checkpoint_path=args.checkpoint,
-        network_scaler_path=args.network_scaler or DEFAULT_NETWORK_SCALER,
-        semantic_scaler_path=args.semantic_scaler or DEFAULT_SEMANTIC_SCALER,
-        model_id=args.model_id,
-        device=args.device,
-        window=args.window,
-        use_missing_masks=args.use_missing_masks,
-    )
-    log("policy loaded (checkpoint=%s, device=%s)" % (args.checkpoint, getattr(policy, "_device", "?")))
+    # --policy greedy: the causal greedy-reward teacher rule as a serving policy (no LLM). Precompute the
+    # per-segment semantic_weight (min-max mixture across this video) + reward weights EXACTLY as the
+    # offline teacher (benchmark/relabel_greedy.py via dp_oracle), so serve == train.
+    policy = None
+    greedy_W = None
+    sem_weights = None
+    if args.policy == "greedy":
+        sys.path.insert(0, os.path.abspath(os.path.join(_HERE, "..", "..", "scripts")))
+        from dp_oracle import load_reward_config, compute_semantic_weights  # type: ignore
+        cfg = load_reward_config(args.reward_config)
+        greedy_W = dict(cfg["reward_weights"])
+        if args.w_stall is not None:
+            greedy_W["w_stall"] = args.w_stall
+        if args.thr_safety is not None:
+            greedy_W["thr_safety"] = args.thr_safety
+        sem_weights = compute_semantic_weights(metadata_index, cfg["semantic_weight_mixture"])
+        log("greedy teacher policy: weights=%s" % {k: round(greedy_W.get(k, 0.0), 3) for k in
+            ("w_vmaf", "w_stall", "w_switch", "scene_cut_discount", "w_quality_sensitive", "thr_safety")})
+    else:
+        policy = LlmAbrPolicy(
+            checkpoint_path=args.checkpoint,
+            network_scaler_path=args.network_scaler or DEFAULT_NETWORK_SCALER,
+            semantic_scaler_path=args.semantic_scaler or DEFAULT_SEMANTIC_SCALER,
+            model_id=args.model_id,
+            device=args.device,
+            window=args.window,
+            use_missing_masks=args.use_missing_masks,
+        )
+        log("policy loaded (checkpoint=%s, device=%s)" % (args.checkpoint, getattr(policy, "_device", "?")))
 
-    # READY handshake (first stdout line) — tells the 3.6 client the model is loaded.
+    prev_vmaf_by_node: dict = {}
+
+    # READY handshake (first stdout line) - tells the 3.6 client the model is loaded.
     sys.stdout.write(json.dumps({"ready": True}) + "\n")
     sys.stdout.flush()
 
     # Per-UE last chosen rung, to reconstruct `last_segment_bitrate_bps` (the VBR-actual bitrate of
-    # the previously downloaded segment) exactly as the offline trace pipeline does — the live struct
+    # the previously downloaded segment) exactly as the offline trace pipeline does - the live struct
     # does NOT carry this field, so without this the model gets a constant 0.0 (a log-feature -> extreme
     # OOD z-score) and over-asks online. Mirrors extract_trace.py:_last_segment_bitrate.
     last_rung_by_node: dict = {}
@@ -148,6 +195,20 @@ def main() -> None:
             segment_meta = metadata_index.get(seg_id)  # tolerate an already-0-indexed source
         if segment_meta is None:
             resp = {"fallback": True, "reason": "missing_metadata"}
+        elif args.policy == "greedy":
+            # Causal greedy-reward teacher rule (no LLM, no guard): argmax immediate QoE over the ladder.
+            node = int(req.get("node_id", -1))
+            seg0 = seg_id - 1 if metadata_index.get(seg_id - 1) is not None else seg_id
+            thr = float(req.get("throughput_estimate_bps", 0.0))
+            buf = float(req.get("buffer_level_s", 0.0))
+            sizes = [float(segment_meta.size_bytes.get(lv, 0.0)) for lv in LADDER_LEVELS]
+            vmafs = [float(segment_meta.vmaf.get(lv, 0.0)) for lv in LADDER_LEVELS]
+            sem = float(sem_weights.get(seg0, 0.0))
+            cut = 1 if float(segment_meta.semantic_raw.get("scene_cut_count", 0.0)) > 0 else 0
+            rung = _greedy_rung(thr, buf, sizes, vmafs, prev_vmaf_by_node.get(node), sem, cut, greedy_W)
+            prev_vmaf_by_node[node] = vmafs[rung]
+            resp = {"chosen_bitrate_bps": int(NS3_RATE_LADDER_BPS[rung]), "delay_s": 0.0,
+                    "reason": "greedy_teacher"}
         else:
             # Inject last_segment_bitrate_bps = actual (VBR) bitrate of the PREVIOUS segment at the rung
             # the policy chose for it, matching the offline trace (extract_trace.py). The live struct

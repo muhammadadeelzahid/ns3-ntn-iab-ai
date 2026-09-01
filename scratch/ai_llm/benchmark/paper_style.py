@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 _HERE = os.path.dirname(os.path.abspath(__file__))
 PAPER_DIR = os.path.join(_HERE, "paper")
 
-# IEEE/ACM 2-column layout widths (inches) — keep ALL figures one of these two sizes for uniformity.
+# IEEE/ACM 2-column layout widths (inches) - keep ALL figures one of these two sizes for uniformity.
 COL_SINGLE = (3.4, 2.3)   # one column
 COL_DOUBLE = (7.0, 2.6)   # full width
 
@@ -23,24 +23,24 @@ COND = {1: "100Gb/s", 2: "36Mbps", 3: "18Mbps", 4: "9Mbps", 5: "4.5Mbps"}
 COND_ORDER = [1, 2, 3, 4, 5]
 
 # Algorithm registry: results-file stem -> (display name, color, marker). Order = legend/table order.
-# "Greedy_sem" (our content+network V2 on the greedy-reward causal teacher) is the highlighted headline
-# (bold red diamond); "AiDash" is the throughput-only V2 baseline; DP-oracle is a neutral reference.
+# Fixed-binary benchmark (2026-07-05): "AiDash" IS our content+network LLM-ABR model (greedy-trained,
+# checkpoints_bola) - the highlighted headline (bold red diamond); the 3 classics BOLA/RAAHS/AAASH are
+# the baselines. (Older arms Greedy_sem/Svaa/Sftm/Fdash/Osmp are not in this benchmark.)
 ALGOS = [
-    ("Greedy_sem", {"name": "V2+content (ours)", "color": "#d62728", "marker": "D"}),
-    ("AiDash",     {"name": "V2 (thrpt)",        "color": "#17becf", "marker": "p"}),
-    ("Svaa",   {"name": "SVAA",      "color": "#1f77b4", "marker": "o"}),
-    ("Sftm",   {"name": "SFTM",      "color": "#2ca02c", "marker": "s"}),
-    ("Raahs",  {"name": "RAAHS",     "color": "#ff7f0e", "marker": "^"}),
-    ("Fdash",  {"name": "FDASH",     "color": "#9467bd", "marker": "v"}),
-    ("Aaash",  {"name": "AAASH",     "color": "#8c564b", "marker": "P"}),
-    ("Osmp",   {"name": "OSMP",      "color": "#7f7f7f", "marker": "X"}),
+    ("AiDash", {"name": "LLM-ABR", "color": "#d62728", "marker": "D"}),
+    ("Raahs",  {"name": "RAAHS", "color": "#ff7f0e", "marker": "^"}),
+    ("Aaash",  {"name": "AAASH", "color": "#8c564b", "marker": "P"}),
+    ("Bola",   {"name": "BOLA",  "color": "#1f77b4", "marker": "o"}),
 ]
 ALGO_STYLE = dict(ALGOS)
 ORACLE_STYLE = {"name": "DP-oracle", "color": "#000000", "marker": "*"}
 
 
 def apply_style():
-    """Set global rcParams so every figure shares font/size/look. Call once before plotting."""
+    """Set global rcParams so every figure shares font/size/look (IEEE minimalist). Call once before plotting.
+
+    IEEE conventions: Times serif ~8pt, single-column ~3.4in, no chartjunk - top/right spines off, thin
+    axes, outward ticks, and a faint dashed HORIZONTAL-only reference grid (no vertical rules)."""
     plt.rcParams.update({
         "font.family": "serif",
         "font.serif": ["Times New Roman", "DejaVu Serif"],   # DejaVu always available fallback
@@ -57,12 +57,26 @@ def apply_style():
         "savefig.dpi": 300,
         "savefig.bbox": "tight",
         "savefig.pad_inches": 0.02,
+        # minimalist reference grid: faint dashed, horizontal only
         "axes.grid": True,
-        "grid.alpha": 0.3,
-        "grid.linewidth": 0.5,
+        "axes.grid.axis": "y",
+        "grid.linestyle": (0, (4, 4)),
+        "grid.alpha": 0.35,
+        "grid.linewidth": 0.4,
+        # thin frame, only left+bottom, outward short ticks
+        "axes.linewidth": 0.6,
         "axes.spines.top": False,
         "axes.spines.right": False,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "xtick.major.size": 2.5,
+        "ytick.major.size": 2.5,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
         "legend.frameon": False,
+        "legend.handletextpad": 0.4,
+        "legend.borderaxespad": 0.3,
+        "legend.labelspacing": 0.3,
     })
 
 

@@ -69,10 +69,10 @@ def main():
         return "\\textbf{%s}" % s if is_best else s
 
     lines = []
-    lines.append("% Table 1 -- % of DP-oracle (VMAF-QoE) by algorithm x S1-U link rate. Auto-generated.")
+    lines.append("% Table 1 -- % of greedy causal-teacher ceiling (VMAF-QoE, down-only) by algorithm x bottleneck link rate. Auto-generated.")
     lines.append("\\begin{table}[t]\\centering\\footnotesize")
-    lines.append("\\caption{Perceptual QoE as \\%% of the DP-oracle ceiling, by ABR algorithm and S1-U "
-                 "feeder rate (held-out 14-video test split). Higher is better; best per column in bold.}")
+    lines.append("\\caption{Perceptual QoE as \\%% of the greedy causal-teacher ceiling, by ABR algorithm and "
+                 "bottleneck link rate (10 headroom-stratified test videos). Higher is better; best per column in bold.}")
     lines.append("\\label{tab:oracle}")
     lines.append("\\begin{tabular}{l" + "r" * len(COND_ORDER) + "r}")
     lines.append("\\toprule")
@@ -109,19 +109,24 @@ def main():
             sty["name"], pct_all[stem], mean([r["regret"] for r in rs]), mean([r["vmaf"] for r in rs]),
             mean([r["bit"] for r in rs]), mean([r["stall"] for r in rs]), mean([r["switch"] for r in rs])))
     out.append("")
-    out.append("Per-condition mean regret (lower=better) — checks 'V2 lowest in every condition':")
+    out.append("Per-condition mean regret (lower=better) - checks 'V2 lowest in every condition':")
     out.append("  algo        " + "  ".join("%8s" % COND[c] for c in COND_ORDER))
     for stem, sty in ALGOS:
         out.append("  %-10s  " % sty["name"] + "  ".join("%8.1f" % reg_cell[stem][c] for c in COND_ORDER))
     # key deltas
     out.append("")
-    v2 = pct_cell["Greedy_sem"]
+    v2 = pct_cell["AiDash"]  # AiDash = our LLM-ABR model (the headline arm)
+    heur = [s for s, _ in ALGOS if s != "AiDash"]
+    best_heur = max(heur, key=lambda s: pct_all[s]) if heur else None
     out.append("Key deltas for prose:")
-    out.append("  Ours overall %%oracle = %.1f (best overall = %.1f) ; throughput-only V2 = %.1f" % (
-        pct_all["Greedy_sem"], best_all, pct_all["AiDash"]))
-    out.append("  Ours @9Mbps = %.1f vs SFTM %.1f ; Ours @4.5Mbps = %.1f vs SFTM %.1f (heuristics win under extreme congestion)" % (
-        v2[4], pct_cell["Sftm"][4], v2[5], pct_cell["Sftm"][5]))
-    v2_lowest = all(reg_cell["Greedy_sem"][c] <= min(reg_cell[s][c] for s, _ in ALGOS) + 1e-9 for c in COND_ORDER)
+    out.append("  Ours (LLM-ABR) overall %%oracle = %.1f (best overall arm = %.1f)" % (
+        pct_all["AiDash"], best_all))
+    if best_heur:
+        out.append("  Best heuristic = %s @ %.1f overall (ours %+.1f vs it)" % (
+            best_heur, pct_all[best_heur], pct_all["AiDash"] - pct_all[best_heur]))
+    out.append("  Ours @36Mbps=%.1f @18Mbps=%.1f (moderate congestion: ours strongest) ; @100Gb/s=%.1f (uncongested: ours weakest)" % (
+        v2[2], v2[3], v2[1]))
+    v2_lowest = all(reg_cell["AiDash"][c] <= min(reg_cell[s][c] for s, _ in ALGOS) + 1e-9 for c in COND_ORDER)
     out.append("  Ours has lowest per-condition regret in EVERY condition: %s" % v2_lowest)
     open(os.path.join(PAPER_DIR, "inline_stats.txt"), "w").write("\n".join(out) + "\n")
 

@@ -8,7 +8,7 @@ Per segment, pick the rung that maximises the *immediate* QoE reward, using only
             - w_switch * |VMAF(r) - VMAF_prev| * (1 - scene_cut_discount * is_scene_cut)
   dl(r) = 8 * size_bytes(r) / throughput_estimate_bps   # myopic download time at the CURRENT estimate
 
-This is NOT the DP-oracle: it is single-segment (myopic, no DP) and present-only (causal, no future) — so a
+This is NOT the DP-oracle: it is single-segment (myopic, no DP) and present-only (causal, no future) - so a
 model can reproduce it online. Unlike the throughput-only teacher it depends on content (VMAF, semantic
 weight, scene-cut) + buffer, so imitating it forces the model to use content+network.
 
@@ -47,10 +47,20 @@ def _ladder(row):
 
 def greedy_rung(thr, buf, sizes, vmafs, prev_vmaf, sem, cut, W):
     best, bi = -1e18, 0
+    # thr_safety<1 discounts the (causal) throughput estimate so the teacher predicts a larger
+    # download time -> more conservative exactly when bandwidth is the binding constraint (scarcity).
+    thr_eff = max(thr * W.get("thr_safety", 1.0), 1.0)
     for r in range(len(LADDER_LEVELS)):
-        dl = 8.0 * sizes[r] / max(thr, 1.0)
+        dl = 8.0 * sizes[r] / thr_eff
         rebuf = max(0.0, dl - buf)
-        sw = 0.0 if prev_vmaf is None else W["w_switch"] * abs(vmafs[r] - prev_vmaf) * (1.0 - W["scene_cut_discount"] * cut)
+        # switch_mode=down_only: DIRECTIONAL smoothness - penalize only quality DROPS (up-switches free),
+        # matching dp_oracle._switch_penalty and greedy_teacher.greedy_rung (single QoE def).
+        if prev_vmaf is None:
+            sw = 0.0
+        else:
+            mag = max(0.0, prev_vmaf - vmafs[r]) if W.get("switch_mode") == "down_only" \
+                else abs(vmafs[r] - prev_vmaf)
+            sw = W["w_switch"] * mag * (1.0 - W["scene_cut_discount"] * cut)
         q = W["w_vmaf"] * sem * vmafs[r]
         # optional extra content term (off by default; w_quality_sensitive=0 in the base config)
         q += W.get("w_quality_sensitive", 0.0) * sem * vmafs[r]
@@ -72,13 +82,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("in_dir"); ap.add_argument("out_dir")
     ap.add_argument("--reward-config", default=os.path.join(os.path.dirname(__file__), "..", "config", "oracle_reward.json"))
-    for k in ("w_vmaf", "w_stall", "w_switch", "scene_cut_discount", "w_quality_sensitive"):
+    for k in ("w_vmaf", "w_stall", "w_switch", "scene_cut_discount", "w_quality_sensitive", "thr_safety"):
         ap.add_argument("--" + k.replace("_", "-"), type=float, default=None)
     args = ap.parse_args()
 
     cfg = load_reward_config(args.reward_config)
     W = dict(cfg["reward_weights"])
-    for k in ("w_vmaf", "w_stall", "w_switch", "scene_cut_discount", "w_quality_sensitive"):
+    for k in ("w_vmaf", "w_stall", "w_switch", "scene_cut_discount", "w_quality_sensitive", "thr_safety"):
         v = getattr(args, k)
         if v is not None:
             W[k] = v

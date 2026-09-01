@@ -19,7 +19,9 @@ COND = {1: "100Gb/s", 2: "36Mbps", 3: "18Mbps", 4: "9Mbps", 5: "4.5Mbps"}
 # preferred arm display order (classics by strength, V2 last); unknown arms appended
 ORDER = ["AiDash", "Svaa", "Sftm", "Raahs", "Fdash", "Aaash", "Osmp"]
 
-ROW_RE = re.compile(r"^(\S+)/run_(\d+)\s+\d+\s+([\d.]+)%\s+([\d.]+)\s+([\d.]+)")
+# regret (group 4) can be negative (policy beat the ceiling), so allow a leading '-';
+# otherwise those rows silently drop and bias the mean down.
+ROW_RE = re.compile(r"^(\S+)/run_(\d+)\s+\d+\s+([\d.]+)%\s+(-?[\d.]+)\s+([\d.]+)")
 
 
 def parse_arm(path):
@@ -52,7 +54,7 @@ def main():
 
     conds = sorted(COND)
     print("# Benchmark: mean %-of-oracle (VMAF-QoE) by ABR algorithm x network condition\n")
-    print("Held-out 14-video test split. Each cell = mean over videos at that S1-U feeder rate.\n")
+    print("10 headroom-stratified test videos. Each cell = mean over videos at that bottleneck link rate.\n")
     hdr = "| Algorithm | " + " | ".join(COND[c] for c in conds) + " | **all** |"
     sep = "|" + "---|" * (len(conds) + 2)
     print(hdr)

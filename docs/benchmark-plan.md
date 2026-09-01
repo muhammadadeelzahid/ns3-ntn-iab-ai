@@ -1,303 +1,218 @@
-# LLM-ABR benchmark plan — variants, architectures, and evaluation
+# LLM-ABR benchmark plan — model, evaluation, and paper figures
 
-This document specifies the ablation suite for the semantic LLM-ABR policy: the exact
-architecture of each variant, what each comparison proves, and the evaluation protocol.
-It is grounded in the frozen contract: `model_input` = `network_norm` (7) +
-`semantic_norm` (5) + `ladder_context` (6×2 `[size_bytes, vmaf]`), optional time-series
-**window** `W` on the network branch; label = `oracle_bitrate_idx ∈ {0..5}`; teacher = the
-semantic DP oracle. Goal: imitation now (SFT), QoE evaluation in/out of distribution,
-RL later.
+This document specifies the **single content-aware LLM-ABR policy** we train and benchmark for
+NTN: its architecture, the evaluation protocol, and the paper figure/table selection.
 
----
+> Earlier drafts described a V0–V3 ablation ladder (Tier-0 MLP, random-LLM, pretrained-LLM, and a
+> language-channel variant). **That is abandoned.** There is now **one model** — the combined
+> network+semantic LLM policy trained on the **greedy-reward causal teacher**. The language/text
+> channel (V3) was tested and dropped (no robust gain; see the `v3-language-channel-result`
+> finding). See git history for the ablation rationale.
 
-## 1. The ablation ladder
-
-Each variant changes **exactly one factor** from the one below it, so each *comparison*
-answers one question.
-
-| ID | Variant | One-line | Factor introduced |
-|----|---------|----------|-------------------|
-| **V0** | Tier-0 (no LLM) | encoder → policy head | — (baseline) |
-| **V1** | Random LLM | encoder → **randomly-initialized** LLM (full fine-tune) → head | transformer **capacity** |
-| **V2** | Pretrained LLM | encoder → **pretrained** LLM, frozen + LoRA → head; **numeric soft-tokens only** | **pretrained knowledge** |
-| **V3** | Text + soft (ours) | V2 **+ content-derived language** (genre / scene description / NTN regime) as real text tokens | the **language channel** — *new information*, not the numbers re-spelled |
-
-**Claim per comparison**
-
-| Comparison | Question | Expected result |
-|-----------|----------|-----------------|
-| V0 vs V2 | Does an LLM beat a strong small encoder? | V2 ≥ V0, mainly **out-of-distribution** |
-| V1 vs V2 | Pretrained knowledge vs raw capacity? | V2 ≫ V1 (replicates NetLLM Fig 13) |
-| V2 vs V3 | Does *language carrying new information* (genre/scene/regime) help over numbers alone? | V3 > V2, **strongest on unseen content** (**our contribution**) |
-| (opt) V2 vs V2-noSem | Does the semantic modality help at all? | V2 > V2-noSem |
+**Frozen contract:** `model_input = network_norm (7) + semantic_norm (5) + ladder_context (6×2
+[size_bytes, vmaf])`, optional time-series **window** `W` on the network branch (current `W=4`);
+label = the teacher rung `∈ {0..5}` (field `oracle_bitrate_idx`, now holding the **greedy** label);
+**teacher = the greedy-reward causal policy** (§4.0). Goal: imitation (SFT) now, QoE evaluation
+in/out of distribution, RL later.
 
 ---
 
-## 2. Shared components (identical across variants)
+## 1. The model
 
-These are held constant so any difference is attributable to the factor under test.
-
-### 2.1 Inputs (per decision)
-- **network_norm**: `[W, 7]` — time-series window of `W` past segments (same `(run_id, node_id)`), z-scored per timestep (`feature_scaler_network.json`; throughput & last-segment-bitrate are `log1p`-scaled). `W=1` is the snapshot case.
-- **semantic_norm**: `[5]` — current segment, z-scored (`feature_scaler_semantic.json`).
+### 1.1 Inputs (per decision)
+- **network_norm**: `[W, 7]` — time-series window of `W` past segments (same `(run_id, node_id)`),
+  z-scored per timestep (`feature_scaler_network.json`; throughput & last-segment-bitrate are
+  `log1p`-scaled). `W=1` is the snapshot case.
+- **semantic_norm**: `[5]` — current segment's **content** features (motion, saliency, object,
+  quality-sensitivity, scene-cut-derived), z-scored (`feature_scaler_semantic.json`). This is the
+  *numeric* content signal — there is **no language/text channel** (that variant was abandoned).
 - **ladder_context**: `[6, 2]` — current segment `[size_bytes, vmaf]` per rung (raw).
-- **(V3 only) content/context text**: a short **content-derived** descriptor that carries information *not present in the numeric vectors* (genre, scene/object description, NTN regime) — **not** a restatement of the numeric semantics. Generated offline from the source video (see §4.5).
 
-### 2.2 Multimodal encoder (the shared body front-end)
-Trainable in every variant. Produces a fixed embedding `e_fused`.
+### 1.2 Multimodal encoder
+Produces a fixed embedding `e_fused` (all branches trainable).
 
 | Branch | Input | Layers | Output |
 |--------|-------|--------|--------|
 | Network (temporal) | `[B, W, 7]` | `Conv1d(7→128,k3,pad1)→SiLU→Dropout→Conv1d(128→128,k3,pad1)→SiLU → AdaptiveAvgPool1d(1) → LayerNorm` | `net_emb [B,128]` |
 | Semantic | `[B, 5]` | `Linear(5→64)→SiLU→LayerNorm→Dropout→Linear(64→64)→SiLU→LayerNorm` | `sem_emb [B,64]` |
-| Ladder | `[B, 6, 2]` | per-rung `Linear(2→32)→SiLU`, then **attention-pool over 6 rungs** (upgrade from mean-pool) | `lad_emb [B,32]` |
+| Ladder | `[B, 6, 2]` | per-rung `Linear(2→32)→SiLU`, then attention-pool over the 6 rungs | `lad_emb [B,32]` |
 | Fusion | concat `[B,224]` | `Linear(224 → d_fuse)` | `e_fused [B, d_fuse]` |
 
-`net_emb` already exists in `model.py` (1D-CNN, length-agnostic). The ladder
-attention-pool is a small upgrade from the current mean-pool. `d_fuse` depends on the
-variant (see §4).
+The 1D-CNN network branch is length-agnostic (handles any window `W`).
 
-### 2.3 Policy head (the shared body back-end)
-Trainable in every variant.
+### 1.3 Soft-token injection → LLM → policy head
+The encoder output is projected into the LLM embedding space and injected as **soft tokens**
+(bypassing the tokenizer):
 ```
-Linear(d_in → 256) → SiLU → Dropout(0.1) → Linear(256 → 128) → SiLU → Linear(128 → 6)  → bitrate_logits
+e_fused → Linear(d_fuse → k·d_model) → soft_tokens [B, k, 1536]
+        → Qwen2.5-1.5B (PRETRAINED, FROZEN + LoRA)  via inputs_embeds=
+        → pool last hidden [B,1536] → policy head → 6 bitrate logits
 ```
-Action = `argmax(bitrate_logits)` → rung → bps via `NS3_RATE_LADDER_BPS`. (A `Linear(128→1)`
-**value head** is added only for the RL phase, not for these SFT benchmarks.)
+- **Backbone:** Qwen2.5-1.5B-Instruct (hidden `d_model=1536`), **frozen**; **LoRA** (r=16, α=32,
+  dropout 0.05) on attention proj + MLP. `k` soft tokens (default `k=4`).
+- **Policy head:** `Linear(1536→256)→SiLU→Dropout(0.1)→Linear(256→128)→SiLU→Linear(128→6)`.
+- **Action:** `argmax(logits)` → rung → bps via `NS3_RATE_LADDER_BPS`. (A `Linear(128→1)` value
+  head is added only for the RL phase, not for these SFT benchmarks.)
+- **Trainable:** encoder + soft-token projection + LoRA adapters + head. **Frozen:** base LLM.
+  Checkpoint stores encoder + projection + LoRA + head + `window` + scaler hashes + `model_id`
+  (frozen base loaded from HF, not saved).
 
-### 2.4 Normalization, label, loss
-- Normalization applied **at load** via the two pinned scalers (already implemented).
-- Label = `teacher.chosen_bitrate_class`. Loss = **class-weighted cross-entropy** (rung 5 ≈ 51%, rung 1 ≈ 2%); weights = inverse-frequency, computed on the **train split only**.
+### 1.4 Teacher, label, loss
+- **Teacher = the greedy-reward causal policy** (§4.0) — NOT the DP-oracle. Labels are produced by
+  `relabel_greedy.py` from the QoE reward in `config/oracle_reward.json` (`w_stall=65`).
+- **Label** = teacher rung (`oracle_bitrate_idx`). **Loss** = class-weighted cross-entropy
+  (inverse-frequency on the **train split only**; the rung distribution is skewed).
+- Normalization applied **at load** via the two pinned scalers.
 
-### 2.5 The embedding-injection mechanism (V1–V3)
-The transformer consumes `d_model`-dim vectors, not text. Variants with an LLM project the
-encoder output into the **LLM's embedding space** and inject it as **token-like embeddings**
-(soft tokens), bypassing the tokenizer:
-```
-e_fused [B, d_fuse] → Linear(d_fuse → k · d_model) → reshape → soft_tokens [B, k, d_model]
-```
-- `d_model` = the LLM hidden size (e.g., **1536** for Qwen2.5-1.5B, 4096 for 7B).
-- `k` = number of soft tokens (default **k=4**).
-- Injected via HF `inputs_embeds=` (prefix). The pooled output is the **last hidden state**
-  over the injected sequence (or attention-pool over the `k` positions) → fed to the head.
+### 1.5 Training recipe
+- QLoRA 4-bit base for training; bf16 elsewhere; `torch.inference_mode` at eval.
+- AdamW, lr 1e-3 (encoder/head) / 1e-4 (LoRA), cosine, ~5–10 epochs, early-stop on val.
+- Group-aware splits (§2.2); multiple seeds; report mean ± std. Current window `W=4`.
 
 ---
 
-## 3. Backbone, training, and compute (shared)
+## 2. Evaluation protocol
 
-- **Backbone (V1–V3):** **Qwen2.5-1.5B-Instruct** (hidden 1536). ≥1B is required — NetLLM's
-  OPT-0.35B lost to every ABR baseline; 1.3–1.5B is the tractable sweet spot for a 4-way
-  sweep. Scale-up runs (3B/7B) optional after the 1.5B sweep.
-- **Adaptation:** V2/V3 = base **frozen**, **LoRA** (r=16, α=32, dropout 0.05) on attention
-  proj + MLP; encoder + projection + head fully trained. V1 = **all weights trainable**
-  (random init can't be frozen — see §4.2 caveat).
-- **Precision:** QLoRA 4-bit base for V2/V3 training; bf16 elsewhere. `torch.inference_mode`
-  at eval.
-- **Optimizer/schedule:** AdamW, lr 1e-3 (encoder/head) / 1e-4 (LoRA), cosine, ~5–10 epochs,
-  early-stop on val macro-F1.
-- **Splits/seeds:** group-aware splits (§5.2); **3 seeds** per variant; report mean ± std.
-- **Held constant across variants:** dataset, splits, scalers, window `W`, oracle labels,
-  class weights, training budget, eval harness.
+### 2.1 Metrics
+**A. Imitation quality (sanity — does it match the teacher?)**
+- **macro-F1** and **per-class recall** (NOT top-1 accuracy — rung imbalance makes it a trap);
+  6×6 **confusion matrix**. (Offline F1 ≠ online QoE — diagnostic only.)
 
----
+**B. QoE (the headline)** — replay the policy's chosen rungs through the player model (offline
+buffer model first; live ns-3 for the finalists). Report:
+- **avg VMAF** ↑, **rebuffering time** ↓, **switch magnitude/frequency** ↓, and
+- **combined QoE** `= w_vmaf·Σ(ω·VMAF) − w_stall·Σstall − w_switch·Σ|ΔVMAF|` (weights from
+  `oracle_reward.json`), reported as **%-of-greedy** (§4.0).
 
-## 4. Complete architecture per variant
+**C. Systems (deployment story)** — decision **latency p50/p95**, model **size / GPU memory**.
 
-### 4.0 V0 — Tier-0 (no LLM)
-**Purpose:** strong small-model control / efficiency floor. This is essentially today's
-`LlmAbrModel` with the placeholder projector.
-```
-[network W×7] ─┐
-[semantic 5] ──┤→ MultimodalEncoder → e_fused [B,256] → backbone_projector
-[ladder 6×2] ──┘                                         (Linear256→SiLU→LayerNorm)
-                                                              → policy head → 6 logits
-```
-- `d_fuse = 256`. **No LLM.** Everything trainable.
-- **Params:** ~0.3–1 M trainable. **Latency:** <1 ms. **No GPU/transformers dependency.**
-
-### 4.1 V1 — Random-initialized LLM (full fine-tune)
-**Purpose:** isolate *pretrained knowledge* — same architecture as V2 but the LLM starts
-from random weights.
-```
-encoder → e_fused → Linear(→ k·1536) → soft_tokens [B,4,1536]
-        → LLM(Qwen2.5-1.5B config, RANDOM init, ALL weights trainable)
-        → pool last hidden [B,1536] → policy head → 6 logits
-```
-- **Trainable:** encoder + projection + **entire LLM** + head. **Frozen:** nothing.
-- **Params trainable:** ~1.5 B. **Caveat (inherent):** you cannot freeze random weights, so
-  V1 is *full* fine-tune while V2 is frozen+LoRA — this bundles "random-vs-pretrained" with
-  "fullFT-vs-LoRA," exactly as NetLLM did. Interpret V1 as **"no pretrained knowledge"**, and
-  **expect it to over/underfit on ~12k rows** — that underperformance *is* the result.
-- **Latency/memory:** like V2 at inference; training is the heaviest (full 1.5B grads).
-
-### 4.2 V2 — Pretrained LLM (frozen + LoRA), numeric soft-tokens
-**Purpose:** the NetLLM-equivalent Tier-1. Numeric modalities only (network + semantic +
-ladder), no language.
-```
-encoder → e_fused → Linear(→ k·1536) → soft_tokens [B,4,1536]
-        → LLM(Qwen2.5-1.5B, PRETRAINED, FROZEN + LoRA)
-        → pool last hidden [B,1536] → policy head → 6 logits
-```
-- **Trainable:** encoder + projection + **LoRA adapters** + head. **Frozen:** base LLM.
-- **Params trainable:** a few M (encoder/head) + LoRA (~0.5–2% of 1.5B ≈ 8–30 M).
-- **Checkpoint stores:** encoder + projection + LoRA + head + `window` + scaler hashes +
-  `model_id` (frozen base loaded separately from HF — not saved).
-
-### 4.3 V3 — Text + soft embeddings (ours)
-**Purpose:** use the LLM as a *reasoner over content-as-language* — the channel NetLLM never
-uses. Identical to V2 plus a content-derived text sequence.
-```
-source video ── offline pipeline (§4.5) ─→ "Content: live sports broadcast — fast camera pan
-                                   over a crowd, motion-masked. Network: handover imminent,
-                                   beam congested."
-                                   → tokenizer → embed lookup → text_emb [B, T, 1536]
-encoder → e_fused → Linear(→ k·1536) → soft_tokens [B,4,1536]
-sequence = concat(soft_tokens, text_emb)  [B, 4+T, 1536]
-        → LLM(Qwen2.5-1.5B, PRETRAINED, FROZEN + LoRA)
-        → pool last hidden [B,1536] → policy head → 6 logits
-```
-- Same trainable/frozen split as V2; only the **input sequence** gains real text tokens.
-  **V3 requires its own training run** — a *fresh* LoRA fit with the text present. You cannot
-  reuse V2's adapters: they were fit on a soft-tokens-only sequence and never learned to attend
-  to text. The LLM's *language understanding* is free (pretrained); learning to *use* the text
-  for the bitrate decision is not. Same recipe/budget/seeds as V2 — only the text channel differs.
-
-- **The redundancy rule (why the old template was dropped):** templated text derived from the
-  same 5 semantic scalars (`"motion: high; scene-cut: yes; ..."`) carries **identical information**
-  to `semantic_norm` — it is the numbers re-spelled, and gives the LLM nothing the encoder lacks.
-  V3's text must pass **both** tests:
-  1. **Non-redundant** — information *not in* `network_norm` / `semantic_norm` / `ladder_context`.
-  2. **Open-vocabulary / world-knowledge-dependent** — the text→action mapping benefits from
-     pretrained priors and the vocabulary is too large/compositional to enumerate as features.
-     (A single quantity, e.g. a handover countdown, fails this — feed it as a scalar instead.)
-
-- **What the text contains (passes both tests):**
-  - **Content identity / genre** — `"live sports broadcast"`, `"talking-head news"`, `"2D animation"`.
-    Not derivable from the 5 scalars; the LLM knows a fast pan over a crowd *masks* artifacts
-    (drop the rung) while a static face is *unforgiving of blur* (hold quality) — even at identical
-    motion/saliency values.
-  - **Scene / object description** — `"soccer pitch, crowd, fast pan"` vs `"news anchor, studio desk"`.
-    Open-vocabulary, compositional.
-  - *(optional, the NTN edge)* **compositional regime phrase** — `"rain-fade during a handover with a
-    congested beam"` — a conjunction you'd never enumerate as features. Push the *scalar* parts
-    (handover countdown, elevation, UE count) into the numeric branch, not the text.
-
-- Keep `T` small (~20–40 tokens). Both `soft_tokens` and `text_emb` are `d_model=1536` vectors in the
-  **same space**; the text ones come from the normal embedding lookup, the numeric ones from the encoder.
-- **Provable-win shape:** because the text adds information the encoder cannot recover, V3 > V2 is
-  predicted to be **strongest on the unseen-content split** (§5.2) — a genre held out of training where
-  the LLM's priors transfer but the encoder has no anchor. That is the falsifiable claim, not "numbers
-  spelled as words help."
-
-### 4.4 Optional variants
-- **V2-no-semantics:** V2 with the semantic branch removed (network + ladder only) → proves
-  the **semantic modality** helps independent of the LLM. One extra run.
-- **Distilled student:** distill the best variant (likely V3) into V0's small encoder+head via
-  KD (soft-label CE on the teacher logits) → demonstrate **LLM-level QoE at MLP-level
-  latency**, closing the deployment gap NetLLM leaves open. The capstone for the ns-3 loop.
-
-### 4.5 Generating the V3 language features (offline pipeline)
-The V3 text is produced **once, offline, over the source videos** and cached — **nothing runs in
-the per-decision loop** (this also keeps V3 compatible with the NTN latency budget: the text is a
-precomputed dataset column, not a per-segment forward pass). It is joined into the dataset by
-`video_name` + segment index, exactly like the scalers, and its hash is pinned in the manifest.
-
-**Algorithm families (by output type):**
-
-| Family | Output | Representative models | Granularity | Use for |
-|--------|--------|----------------------|-------------|---------|
-| VLM caption/QA (promptable, open-vocab) | free-text description | **Qwen2.5-VL** (3B/7B), InternVL3, **Florence-2** (light, MIT) | shot keyframe | scene description (rich channel) |
-| Open-vocab tagger | tag list | **RAM++** (6.4k+ tags; beats CLIP/BLIP), Tag2Text | keyframe | compact object/scene tags |
-| Zero-shot classifier | label from a fixed candidate list | CLIP / OpenCLIP / **SigLIP** | keyframe | **genre** (closed set, deterministic) |
-| Action/video classifier | action label | SlowFast, Video-Swin (Kinetics) | clip | motion/activity type |
-| Audio / ASR | transcript, audio class | Whisper, PANNs/AST | clip | live/commentary cue (optional) |
-| Shot segmentation | shot boundaries + keyframes | **PySceneDetect** (classical) | video | picks keyframes for the above |
-
-**Two design axes:** (1) *open vs closed vocab* — genre is a small stable set → **SigLIP zero-shot
-against a fixed candidate list** (reproducible); scene description is open-ended → a **VLM**.
-(2) *granularity* — genre is ~static → **once per video**; scene/object content changes → **per shot**
-(PySceneDetect keyframe), each segment inherits its containing shot's description.
-
-**Recommended pipeline (cheap, reproducible):**
-1. **PySceneDetect** → shot boundaries + one center keyframe per shot.
-2. **SigLIP zero-shot** vs a fixed genre list (`["live sports","news studio","animation","nature doc",…]`)
-   → per-video `genre`.
-3. **Florence-2** (`<DETAILED_CAPTION>` + dense-region caption) **or Qwen2.5-VL** on each shot keyframe
-   → per-shot scene text. Qwen2.5-VL shares the text-backbone family; Florence-2 is lighter/MIT for bulk runs.
-4. *(optional)* **RAM++** tags as a structured fallback; **Whisper** on the audio for a live/commentary cue.
-5. Cache to `video_semantics.json` keyed by `(video_name, shot_id)`; join at dataset-build time; freeze
-   its SHA in `manifest.json` alongside the scalers (§6).
-
-**Reproducibility:** the V3 text is a frozen artifact — re-running the pipeline must reproduce it, so pin
-the extractor `model_id`s, prompts, candidate genre list, and PySceneDetect threshold in the manifest.
-
----
-
-## 5. Evaluation protocol
-
-The variants are only as meaningful as the measurement. Fix all of this before training.
-
-### 5.1 Metrics
-**A. Imitation quality (does it match the oracle?)**
-- **macro-F1** and **per-class recall** (NOT top-1 — rung 5 ≈ 51% makes accuracy a trap).
-- 6×6 **confusion matrix**.
-
-**B. QoE (the metric that matters)** — replay each policy's chosen rungs through the player
-model (offline via the oracle's buffer model first; live ns-3 for the finalists). Report the
-components and a combined score consistent with the oracle reward:
-- **avg quality** (VMAF / bitrate) ↑
-- **rebuffering time** ↓
-- **switch magnitude / frequency** (smoothness) ↓
-- **combined QoE** `= w_vmaf·Σ(sem·VMAF) − w_stall·Σstall − w_switch·Σ|ΔVMAF|` (same weights as
-  `oracle_reward.json`), reported as **% of the DP-oracle ceiling**.
-
-**C. Systems (deployment story)**
-- decision **latency p50/p95**, model **size / GPU memory**, params trainable.
-
-### 5.2 Splits — report in-distribution AND out-of-distribution separately
-The LLM's edge (V2/V3) shows up OOD, per NetLLM. Three test sets:
+### 2.2 Splits — report in-distribution AND out-of-distribution separately
 1. **In-distribution:** held-out runs of seen videos (group-aware by `run_id`).
-2. **Unseen content:** held-out **videos** (group-aware by `video_name`) — tests content generalization (where semantics/V3 should help most).
-3. **Unseen network/NTN regime:** test traces from network conditions not in training (different elevation/handover/throughput regimes) — tests the pretrained-knowledge generalization NetLLM highlights.
+2. **Unseen content:** held-out **videos** (group-aware by `video_name`) — where content-awareness
+   should help most (the Fig-3 story).
+3. **Unseen network/NTN regime:** test traces from network conditions not in training.
 
-No `(run_id, node_id)` session may cross a split (also required by the windowing).
+No `(run_id, node_id)` session may cross a split (also required by windowing). The current split is
+the **headroom-stratified, group-aware** split pinned in
+`scratch/ai_llm/benchmark/catalog_selection/stage_b_subset/manifest.json` (so the low-headroom
+bucket is represented in test).
 
-### 5.3 Anchors / baselines
-- **FDASH** (your heuristic) — lower reference.
-- **DP oracle** — upper bound / ceiling (QoE % is measured against this).
-- (optional) a classic ABR (BOLA/MPC-style) if available, à la NetLLM's BBA/MPC/GENET.
+### 2.3 Baselines and reference
+- **Heuristics:** FDASH, BOLA, SVAA, SFTM, RAAHS, AAASH, OSMP.
+- **Reference ceiling:** the **greedy-reward causal policy** ("greedy oracle"; §4.0) — the metric
+  denominator. (The DP-oracle may be computed for an appendix sanity check only.)
 
-### 5.4 Result matrix
-For every (variant × test-split): macro-F1, per-class recall, QoE components + combined
-(% of oracle), latency p50/p95. Plus the **claim table** from §1 filled with numbers and
-seed variance. Use paired comparisons across the same seeds; report mean ± std and a
-significance check (e.g., paired test over seeds/videos).
-
-### 5.5 Success criteria (what each claim needs)
-- **V2 > V0** on QoE in **unseen content / network** splits (in-dist may tie) → LLM earns its keep.
-- **V2 ≫ V1** → pretrained knowledge matters (sanity check vs NetLLM).
-- **V3 > V2** on QoE, strongest on **unseen content** → the language/semantic channel is the contribution.
-- **V2 > V2-noSem** → the semantic modality is justified.
-- **Distilled student** retains ≥ most of V3's QoE at V0's latency → deployable.
+### 2.4 Result matrix
+For every (ours/baseline × test-split × link-rate): QoE components + combined **%-of-greedy**, and
+latency. Paired comparisons across the same seeds; report mean ± std with a significance check.
 
 ---
 
-## 6. Reproducibility & artifacts
+## 3. Reproducibility & artifacts
 - Pin per run: dataset `schema_version` + `manifest.json` (scaler SHAs), `window`, backbone
-  `model_id`, LoRA config, seed, class-weight scheme, split definition.
-- **(V3)** also pin the language-feature artifact: `video_semantics.json` SHA + the extractor
-  `model_id`s, prompts, genre candidate list, and PySceneDetect threshold used to build it (§4.5).
+  `model_id`, LoRA config, seed, class-weight scheme, split definition, and the **reward config**
+  (`oracle_reward.json`, `w_stall=65`).
 - Each checkpoint records `window`, scaler hashes, `model_id` (so eval/inference reproduce
   training exactly).
-- Log: training curves (loss, macro-F1), per-variant result rows, confusion matrices, QoE
-  breakdowns, latency profiles. One results table per test-split.
+- Log: training curves (loss, macro-F1), result rows, confusion matrices, QoE breakdowns, latency
+  profiles. One results table per test-split.
 
-## 7. Recommended order of execution
-1. **V0** (no GPU needed beyond torch) — establishes the floor + validates the eval harness.
-2. **V2** (the workhorse Tier-1) — the main result.
-3. **V1** (sanity ablation vs NetLLM) and **V3** (the contribution).
-4. **V2-no-semantics** and the **distilled student** if budget allows.
+---
 
-Run all on the regenerated raw dataset with refit scalers (see `cluster-rerun-handoff.md`);
-the windowed loader, scalers, head, and FDASH fallback are already implemented — the
-remaining build is the LLM injection (§2.5) for V1–V3.
+## 4. Paper presentation — figure & table selection (5-page budget)
+
+Target venue is a **5-page double-column** paper (≈4 float objects fit comfortably before the
+eval section gets crowded). This section records the **full menu** of candidate floats, the
+**selected set**, and the **conditional decision** on the content-novelty figure. Mockups with
+illustrative placeholder data live in `scratch/ai_llm/benchmark/paper/mockups/` (gitignored,
+each stamped `[DUMMY]`); the real versions regenerate from scored CSVs once Stage C + the
+fixed-binary benchmark land.
+
+### 4.0 Benchmarking reference — the GREEDY equation, NOT the DP-oracle  [DECISION 2026-06-30]
+
+All relative metrics ("%-of-oracle") are scored against the **greedy-reward causal policy**, not
+the acausal DP-oracle. The DP-oracle is **dropped** as the headline reference.
+
+- **Reference = the greedy equation** (per-segment argmax of the QoE reward, present-only/causal):
+  `a_n = argmax_r [ ω_n·VMAF_n(r) − μ·rebuffer_n(r) − λ·|ΔVMAF| ]`
+  (same reward in `config/oracle_reward.json`; implemented in `relabel_greedy.py` /
+  `inference_server.py --policy greedy`).
+- **Why:** the DP-oracle is future-aware (acausal) and over-asks — not a target a causal online
+  policy can reach. The greedy equation is the **realizable causal ceiling** the teacher targets,
+  so "% of greedy" measures how close a policy gets to the best *causal* decision. (See
+  `[[acausal-oracle-misspecified-expert]]` / `[[causal-expert-fixes-online-collapse]]`.)
+- **Naming:** for brevity, figures/tables call this reference the **"oracle"** — but it is the
+  greedy equation. Define once in the paper ("we report % of a causal greedy oracle"), use
+  "oracle" thereafter.
+- **Metric:** `%-of-greedy = (policy − floor) / (greedy − floor)`, floor = lowest-rung policy.
+- The DP solver may still be computed for an appendix sanity check, but it is not the headline
+  standard. The mockup PNGs still say "DP-oracle" in titles — relabel to "greedy oracle" on
+  regeneration.
+
+### 4.1 The full menu of candidates (options)
+
+**Figures**
+| ID | Figure | Axes | What it proves | Mockup |
+|----|--------|------|----------------|--------|
+| Arch | System/architecture diagram | — | frozen Qwen + LoRA + multimodal encoder → policy head; ns-3 closed loop | (have it) |
+| F1 | Quality–Rebuffering Pareto | x = mean VMAF ↑, y = rebuffer s ↓ | we're Pareto-efficient (high quality *and* low stall) | `fig1_pareto_DUMMY.png` |
+| F2 | %-of-greedy vs link rate | x = 5 feeder rates (congestion →), y = %-of-greedy | robustness under congestion (the NTN angle) | `fig2_curve_DUMMY.png` |
+| F3 | Content-awareness gain | x = content type (easy→demanding), y = delivered VMAF; bars net-only vs +semantic | the **novelty**: semantic helps, content-specifically | `fig3_bycontent_DUMMY.png` |
+| F4 | Per-session QoE CDF | x = normalized QoE, y = CDF | we lift worst-case sessions, not just the mean | `fig4_cdf_DUMMY.png` |
+
+**Tables**
+| ID | Table | Contents | What it proves |
+|----|-------|----------|----------------|
+| T1 | Main benchmark | ours + heuristics × 5 rates + Overall, %-of-greedy | complete, credible quantitative comparison |
+| T2 | QoE pillars | mean VMAF / rebuffer s / #switches / regret | decomposes *where* the score comes from |
+| T3 | Ablation / standard-QoE | ±semantic, ±VMAF; scored under our metric AND a semantic-free QoE | gain isn't a self-grading artifact |
+
+### 4.2 Selected set for 5 pages
+
+**Keep as floats (4):**
+1. **Arch diagram** — system anchor (mandatory).
+2. **T1 — main benchmark** — the rigor anchor; one compact table carries every baseline ×
+   every congestion level. Also tells the NTN congestion story via its 9 / 4.5 columns.
+3. **F3 — content-awareness gain** — the novelty justification (see §4.3 for the conditional).
+4. **F1 — Quality–Rebuffering Pareto** — efficiency at a glance; complements T1 (tradeoff
+   geometry vs per-rate numbers, no overlap).
+
+**Demote to prose / appendix (avoid redundant floats):**
+- **F2** is redundant with T1's per-rate columns → cut, *unless* the Fig 3 fallback triggers
+  (§4.3), in which case F2 is promoted and T1 trims to its Overall column.
+- **T2** is redundant with F1's axes → one sentence in prose ("Ours matches the throughput
+  baseline's VMAF at a fraction of the rebuffering").
+- **T3** → two sentences with inline numbers, **%-of-greedy** (kept *in text* because reviewers
+  will ask: "removing the semantic head drops overall %-of-greedy by N pts; under a canonical
+  semantic-free QoE we still lead the throughput baseline"). Numbers computed at Stage C.
+- **F4 (CDF)** → appendix / extended version.
+
+### 4.3 Conditional decision on F3 (the content-novelty figure) — FINAL CALL
+
+F3 is the only float whose inclusion is **gated on the result supporting our theory**, because our
+prior offline language probe found *no* robust semantic advantage in pure imitation (see the
+`v3-language-channel-result` finding). Decision rule, applied once the real Stage-C benchmark
+decision logs exist:
+
+- **Go/no-go criterion (theory supported):** the gain (ours − network-only delivered VMAF)
+  **trends up with content demand** (monotonic or clearly increasing across the content-type
+  ordering) **and** the high-demand gain is materially > noise (rule of thumb: ≥ ~5 VMAF on the
+  most demanding bucket, and the trend holds across videos, not one outlier).
+- **DEFAULT (criterion met):** **F3 = `fig3_bycontent` (delivered-VMAF grouped bar by content
+  type)** is the locked Fig 3 design. Paper headline = *content-aware ABR for NTN*.
+- **FALLBACK (criterion NOT met — flat/within-noise gap):** **drop F3 entirely**, promote
+  **F2 (%-of-greedy vs feeder rate)** into slot 4, trim T1 to its Overall column, and **re-pitch
+  the paper around congestion robustness** (our other genuine strength, still on-theme for NTN)
+  rather than content-awareness. Report the content-null honestly as a secondary finding — do
+  not manufacture the staircase.
+
+Rationale for the by-content bar over the earlier "VMAF-headroom tercile" version: identical
+message but the axes are immediately legible (recognizable content categories + delivered VMAF),
+and the near-tie on easy content is an honest built-in control (the gain is content-specific, not
+a global quality inflation).
+
+### 4.4 Auto-regeneration (deferred)
+When real scored CSVs land, wire the four selected floats into `make_paper_figs.py` /
+`make_paper_table.py` so they regenerate deterministically (F3 from the per-content slice of the
+benchmark decision logs; T1 from the scored `results/*.txt`). No new sims needed — all are
+re-slices of the benchmark output, scored against the greedy reference (§4.0).

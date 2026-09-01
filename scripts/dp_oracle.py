@@ -230,7 +230,13 @@ def _switch_penalty(
     weights: Dict[str, float],
 ) -> float:
     cut_discount = weights["scene_cut_discount"] * (1 if is_cut else 0)
-    return weights["w_switch"] * abs(vmaf_chosen - vmaf_prev) * (1.0 - cut_discount)
+    # switch_mode=down_only: directional smoothness, penalize only quality drops (up-switches free),
+    # which removes the symmetric-|dVMAF| under-ask lock-in. Default "sym" preserves prior behavior.
+    if weights.get("switch_mode") == "down_only":
+        mag = max(0.0, vmaf_prev - vmaf_chosen)
+    else:
+        mag = abs(vmaf_chosen - vmaf_prev)
+    return weights["w_switch"] * mag * (1.0 - cut_discount)
 
 
 def solve_session_dp(
@@ -265,7 +271,7 @@ def solve_session_dp(
         if meta is None and n_src_segments > 0:
             # Looped playback: short videos replay to fill the sim cap (ns-3 AiDashClient loops natively).
             # Map the overflow segment onto its source segment by position (seg_id % N) so its ladder
-            # VMAF/sizes are available — the label keeps the original (overflow) seg_id for the join.
+            # VMAF/sizes are available; the label keeps the original (overflow) seg_id for the join.
             meta = metadata.get(seg_id % n_src_segments)
         if meta is None:
             continue

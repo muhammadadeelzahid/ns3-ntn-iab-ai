@@ -1,13 +1,14 @@
 {
   "version": "semantic-dp-pureqoe",
-  "description": "Pure-QoE reward profile for scripts/dp_oracle.py: quality (w_vmaf*VMAF) - stall (w_stall) - switch (w_switch*|dVMAF|). w_rung=0: the artificial linear rung prior (a label-balancing hack for the abandoned macro-F1 framing) is REMOVED so the oracle = standard ABR QoE ceiling (max quality without stalling). Rung diversity in the dataset now comes from the linkRate-sweep network conditions, not an artificial bitrate penalty. Conservative throughput planning (throughput_planning_factor) for buffer transitions.",
+  "description": "Pure-QoE reward profile for scripts/dp_oracle.py: quality (w_vmaf*VMAF) - stall (w_stall) - switch. w_rung=0: the artificial linear rung prior (a label-balancing hack for the abandoned macro-F1 framing) is REMOVED so the oracle = standard ABR QoE ceiling (max quality without stalling). w_stall=65 [2026-06-29] calibrated to the standard ABR-QoE (Yin/MPC, Pensieve) convention mu=max-quality: 1s of rebuffering costs ~one top-quality segment (w_vmaf*VMAF_max=0.65*100=65). switch_mode=down_only [2026-07-06]: DIRECTIONAL smoothness — penalize only quality DROPS (w_switch*max(0,dVMAF_down)), up-switches are free. Fixes the symmetric-smoothness under-ask lock-in (w_vmaf*sem<=0.65 < 0.8=w_switch made upgrades never pay -> teacher locked one rung low on low-headroom -> the imitation model's low-headroom collapse). Applied to BOTH teacher labels (greedy_teacher.greedy_rung) and scoring QoE (dp_oracle._switch_penalty) as the single source of truth. See docs/teacher-reward-design.md.",
   "reward_weights": {
     "w_vmaf": 0.65,
-    "w_stall": 18.0,
+    "w_stall": 65.0,
     "w_switch": 0.8,
     "w_rung": 0.0,
     "scene_cut_discount": 0.65,
-    "w_quality_sensitive": 0.0
+    "w_quality_sensitive": 0.0,
+    "switch_mode": "down_only"
   },
   "semantic_weight_mixture": {
     "quality_sensitivity": 0.5,

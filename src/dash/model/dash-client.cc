@@ -326,6 +326,8 @@ DashClient::RequestSegment()
     SendSegmentRequest(requestSegmentId, m_bitRate, false);
     m_requestTime = Simulator::Now();
     m_segment_bytes = 0;
+    m_lastWatchdogBytes = 0;
+    m_watchdogStuckTicks = 0;
 
     m_segmentWatchdogTimer.Cancel();
     m_segmentWatchdogTimer = Simulator::Schedule(MilliSeconds(500),
@@ -365,16 +367,47 @@ DashClient::SegmentRequestWatchdog()
         return;
     }
 
-    if (!m_pendingRetryUsed)
+    // Progress-aware watchdog. The previous version retried once then stopped rescheduling, leaving
+    // m_RequestPending=true forever if the segment never completed, which permanently blocks the player's
+    // buffer-underrun re-request path (mpeg-player.cc gates it on !m_RequestPending) so the UE freezes for
+    // good. Instead:
+    //  - if the segment is making progress (more bytes than the last tick), it is just slow: keep waiting;
+    //  - if no progress and nothing has arrived, the request was likely lost: re-request once;
+    //  - otherwise keep waiting for in-flight data, but bound it: after ~5s of no progress, release the
+    //    client (m_RequestPending=false) so the buffer-underrun path can recover.
+    bool progressing = (m_segment_bytes > m_lastWatchdogBytes);
+    m_lastWatchdogBytes = m_segment_bytes;
+
+    if (progressing)
+    {
+        m_watchdogStuckTicks = 0;
+        m_segmentWatchdogTimer = Simulator::Schedule(MilliSeconds(500),
+                                                     &DashClient::SegmentRequestWatchdog, this);
+        return;
+    }
+
+    m_watchdogStuckTicks++;
+
+    // Nothing received yet: the request may have been lost in a handover/loss burst, retry it once.
+    if (m_segment_bytes == 0 && !m_pendingRetryUsed)
     {
         m_pendingRetryUsed = true;
         SendSegmentRequest(m_pendingSegmentId, m_pendingBitRate, true);
-        // single-shot retry with one extra safety window
         m_segmentWatchdogTimer = Simulator::Schedule(MilliSeconds(500),
-                                                     &DashClient::SegmentRequestWatchdog,
-                                                     this);
+                                                     &DashClient::SegmentRequestWatchdog, this);
         return;
     }
+
+    // Some data arrived then stalled, or the lone retry already went out. Keep waiting for the in-flight
+    // segment, but bound the wait so a truly dead segment frees the client (~5s) rather than wedging it.
+    if (m_watchdogStuckTicks < 10)
+    {
+        m_segmentWatchdogTimer = Simulator::Schedule(MilliSeconds(500),
+                                                     &DashClient::SegmentRequestWatchdog, this);
+        return;
+    }
+
+    m_RequestPending = false; // give up on this segment; allow the buffer-underrun path to re-request
 }
 
 void

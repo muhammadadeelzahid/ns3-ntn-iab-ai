@@ -205,6 +205,8 @@ class DashClient : public Application
     uint32_t m_pendingSegmentId = 0;
     uint32_t m_pendingBitRate = 0;
     bool m_pendingRetryUsed = false;
+    uint32_t m_lastWatchdogBytes = 0;  // bytes received as of the previous watchdog tick (progress detection)
+    uint32_t m_watchdogStuckTicks = 0; // consecutive watchdog ticks with no progress
     int32_t m_lastCompletedSegmentId; // Last HTTP segment id that fired completion (-1 = none)
 
     EventId m_keepAliveTimer;

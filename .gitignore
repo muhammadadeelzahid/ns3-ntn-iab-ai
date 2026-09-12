@@ -71,3 +71,8 @@ scratch/ai_llm/checkpoints_*.pt
 scratch/ai_llm/checkpoints_*.pt.lora/
 # midstream held-out eval outputs (regenerable)
 eval_midstream_heldout/
+
+# paper manuscript (LaTeX sources, figures, build artifacts) — not tracked
+/latex-article/
+# all AI/LLM experiment code, diagrams, datasets, and outputs — not tracked
+scratch/ai_llm/

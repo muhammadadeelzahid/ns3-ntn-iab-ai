@@ -35,7 +35,11 @@ namespace ns3
  */
 
 #define MPEG_FRAMES_PER_SEGMENT 100
-#define MPEG_TIME_BETWEEN_FRAMES 33
+// Segment playout duration = MPEG_FRAMES_PER_SEGMENT * MPEG_TIME_BETWEEN_FRAMES.
+// 100 * 20 ms = 2000 ms = 2.0 s, matching the encoded segment duration used by the ABR encoding
+// pipeline (abr: segment_duration_s=2) and the LLM training/oracle. (Was 33 ms => 3.3 s, which
+// over-stated buffer seconds and de-rated per-rung network demand to ~60% of nominal.)
+#define MPEG_TIME_BETWEEN_FRAMES 20
 
 class MPEGHeader : public Header
 {

@@ -50,6 +50,20 @@ Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
   (expect frozen UEs now carry real rebuffer).
 - **Commit** each fix with before/after numbers.
 
+## Phase 1.5 — Dataset expansion (+200 videos) — AFTER the VMAF fix
+Same proven chain used for 25→105 ([[dataset-expansion-plan]]); must run on the FIXED `_04` so the
+new videos are not re-corrupted.
+- **Discover** (`abr/scripts/discover_pexels_4k.py --count 200 --add-to-catalog`, diverse queries to
+  span headroom; needs `PEXELS_API_KEY`); audit the 4K gate (`run_audit_video_resolution.sh`).
+- **Download** → **ABR pipeline** (`run_batch_launch.slurm`, `_01`–`_07`, fixed VMAF) → metadata CSVs.
+- **Allocate train vs test** (drives compute ~10×):
+  - training videos → full **ns-3 trace campaign** (`dash_trace_launch.slurm`, ~5 runs each) →
+    ~1000 ns-3 tasks for 200 — the bottleneck; budget accordingly or cap how many feed training.
+  - test/selection-pool videos → metadata only; the benchmark still runs a stratified subset.
+- Fold into the split; keep the old split archived.
+- Cost: ~200 GPU-h encode+VMAF; ns-3 campaign dominates. Validate with a 1-video smoke run first.
+- **Commit:** "data: expand catalog +200 videos (post-VMAF-fix)".
+
 ## Phase 2 — Rebuild the pipeline on clean data
 - Recompute `quality_sensitivity` + semantic features (depend on VMAF); refit feature scalers
   (archive old).
@@ -114,5 +128,6 @@ Branch `feat/mpc-baselines`.
 - Cover letter; suggested reviewers; novelty statement.
 
 ## Dependency order
-`0 → 1 → 2 → {3} → 4 → 5 → 6 → 7 → 8`. Phases 1–2 gate everything; 3 can be implemented in parallel
-with 2 but scored only after 2. Writing (6) proceeds in parallel but numbers are locked only after 4–5.
+`0 → 1 → 1.5 → 2 → {3} → 4 → 5 → 6 → 7 → 8`. Phases 1–2 gate everything; **1.5 (expansion) must
+follow 1** so new videos get clean VMAF. 3 can be implemented in parallel with 2 but scored only
+after 2. Writing (6) proceeds in parallel but numbers are locked only after 4–5.

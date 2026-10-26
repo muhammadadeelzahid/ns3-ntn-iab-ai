@@ -50,26 +50,14 @@ Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
   (expect frozen UEs now carry real rebuffer).
 - **Commit** each fix with before/after numbers.
 
-## Phase 1.5 — Dataset expansion (+200 videos) — AFTER the VMAF fix
-Same proven chain used for 25→105 ([[dataset-expansion-plan]]); must run on the FIXED `_04` so the
-new videos are not re-corrupted.
-- **Discover** (`abr/scripts/discover_pexels_4k.py --count 200 --add-to-catalog`, diverse queries to
-  span headroom; needs `PEXELS_API_KEY`); audit the 4K gate (`run_audit_video_resolution.sh`).
-- **Download** → **ABR pipeline** (`run_batch_launch.slurm`, `_01`–`_07`, fixed VMAF) → metadata CSVs.
-- **Allocate train vs test** (drives compute ~10×):
-  - training videos → full **ns-3 trace campaign** (`dash_trace_launch.slurm`, ~5 runs each) →
-    ~1000 ns-3 tasks for 200 — the bottleneck; budget accordingly or cap how many feed training.
-  - test/selection-pool videos → metadata only; the benchmark still runs a stratified subset.
-- Fold into the split; keep the old split archived.
-- Cost: ~200 GPU-h encode+VMAF; ns-3 campaign dominates. Validate with a 1-video smoke run first.
-- **Commit:** "data: expand catalog +200 videos (post-VMAF-fix)".
-
 ## Phase 2 — Rebuild the pipeline on clean data
 - Recompute `quality_sensitivity` + semantic features (depend on VMAF); refit feature scalers
   (archive old).
 - Re-derive teacher labels (DP/greedy) on corrected VMAF.
-- **Re-stratify video selection** — the headroom bins were computed on corrupt VMAF, so the current
-  10-video benchmark set is biased; re-pick on clean headroom.
+- **Keep the held-out split fixed; evaluate on the FULL test set (26 videos), not the shrunk 10.**
+  The 10-video shrink was for lgpu wall-time and cherry-picked by corrupt-VMAF headroom — running all
+  26 removes that sub-selection bias. Recompute per-video headroom on clean VMAF for binning/reporting
+  only (not re-selection).
 - **Retrain the LLM** (offline imitation, documented budget) on the clean dataset → new
   `checkpoints_clean/`. Keep the old checkpoint archived for the record.
 - **Commit:** "feat: rebuild dataset + retrain on corrected VMAF (clean pipeline)".
@@ -85,10 +73,14 @@ Branch `feat/mpc-baselines`.
   quality-MPC. That is the real test — plan the narrative for either outcome.
 - **Commit:** "feat: RobustMPC + quality-aware MPC baselines".
 
-## Phase 4 — Re-run benchmark + statistical rigor
-- Re-run the 50-cell matrix (clean VMAF, retrained LLM, all baselines).
+## Phase 4 — Re-run benchmark on the FULL test set + statistical rigor
+- Run the **full 26-video test set × 5 rates = 130 cells per arm** (vs the old 10-video/50-cell shrunk
+  benchmark), clean VMAF, retrained LLM, all baselines. This is the headline change: full held-out
+  test coverage, no sub-selection bias.
+- **Compute note:** 130 LLM cells × seeds is heavy (lgpu wall-time was the reason for the original
+  shrink). Budget more jobs / stagger; heuristics are cheap (C++), the LLM + quality-MPC dominate.
 - **Multiple seeds** (≥3–5 RNG runs per cell) → report mean ± 95% CI and paired significance tests;
-  target p<0.05 for the headline claim (fixes the current p=0.07).
+  target p<0.05 for the headline claim (fixes the current p=0.07). Larger test N also tightens CIs.
 - Resolve the **mean-vs-median** instability and the **9 Mbps dip** honestly (report both; explain).
 - Regenerate all figures/tables from the clean results (archive old `results/` as `results_prevmaf/`).
 - **Commit:** "results: clean 50-cell benchmark with CIs + significance".
@@ -128,6 +120,6 @@ Branch `feat/mpc-baselines`.
 - Cover letter; suggested reviewers; novelty statement.
 
 ## Dependency order
-`0 → 1 → 1.5 → 2 → {3} → 4 → 5 → 6 → 7 → 8`. Phases 1–2 gate everything; **1.5 (expansion) must
-follow 1** so new videos get clean VMAF. 3 can be implemented in parallel with 2 but scored only
-after 2. Writing (6) proceeds in parallel but numbers are locked only after 4–5.
+`0 → 1 → 2 → {3} → 4 → 5 → 6 → 7 → 8`. Phases 1–2 gate everything; no dataset expansion (we test on
+the existing FULL 26-video held-out set, not a shrunk 10). 3 can be implemented in parallel with 2
+but scored only after 2. Writing (6) proceeds in parallel but numbers are locked only after 4–5.

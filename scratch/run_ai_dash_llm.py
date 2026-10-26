@@ -61,7 +61,7 @@ def _spawn_inference_server(args):
 
     Returns the Popen handle, or None if no checkpoint was given (pure-FDASH mode)."""
     policy = getattr(args, "policy", "model")
-    if not args.checkpoint and policy == "model":
+    if not args.checkpoint and policy in ("model", "pensieve"):
         print("[Python] No --checkpoint: running FDASH-only (no inference server).", flush=True)
         return None
     server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_llm",
@@ -170,8 +170,9 @@ def parse_args() -> argparse.Namespace:
         "Overridden by the checkpoint's window if present. 1 = snapshot.",
     )
     parser.add_argument(
-        "--policy", choices=["model", "greedy"], default="model",
-        help="'model' = trained LLM policy; 'greedy' = causal greedy-reward teacher rule (no LLM).",
+        "--policy", choices=["model", "greedy", "pensieve"], default="model",
+        help="'model' = trained LLM policy; 'greedy' = causal greedy-reward teacher rule (no LLM); "
+             "'pensieve' = Pensieve A3C baseline (network-only).",
     )
     parser.add_argument("--w-stall", type=float, default=None,
                         help="Override w_stall for --policy greedy.")

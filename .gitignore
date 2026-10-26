@@ -76,3 +76,8 @@ eval_midstream_heldout/
 /latex-article/
 # all AI/LLM experiment code, diagrams, datasets, and outputs — not tracked
 scratch/ai_llm/
+# viewer run bundles (large; regenerate with scratch/ai_llm/export_viewer_bundle.py)
+viewer_bundles/
+viewer_bundles_portable/
+viewer_bundles_portable.tar
+viewer_bundles.tar

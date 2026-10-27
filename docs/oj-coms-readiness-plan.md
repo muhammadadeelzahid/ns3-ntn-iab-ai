@@ -38,6 +38,16 @@ A journal reviewer will scrutinize correctness. Current blockers, in priority or
 - **Commit:** "chore: preserve viewer bundle exporter, docs, and OJ-COMS plan; track ai_llm source".
 
 ## Phase 1 — Fix data-integrity blockers (GATING)
+**EXECUTED 2026-10-26 (cheap path):** full re-investigation confirmed the VMAF bug = 32/242 catalog
+videos (test 4/26, val 5/26, train 20/128; 3 of the paper's 10) whose six rung encodes were
+copy-segmented with a merged 4 s first segment vs the 2 s `original`, offsetting the VMAF reference and
+semantic frames by one segment. Fix applied: `abr/scripts/realign_original.py` re-splits `original`
+onto the rung timeline (rung media untouched, `*_prealign` archived, argmax-over-offset verified);
+all 32 aligned (abr commit ccdb313). Recompute of frames→VMAF→semantic→metadata for the 32 running as
+`abr/realign_affected.slurm` job 8124852. The stall fix (`extract_true_stall.true_stall_per_ue`) and
+the 2.0 s segment-size fix landed in ns3 commit 49a51c9. Remaining Phase-1 item: validate job
+8124852 output (top-rung VMAF median > 55 on the 32), then proceed to Phase 2.
+
 Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
 - **VMAF:** root cause = per-segment temporal offset between encoded and "original" segments (matching
   frame counts, shifted window) in abr `_04_compute_quality_metrics.py`. Fix the segment alignment

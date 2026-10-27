@@ -147,6 +147,12 @@ class DashClient : public Application
      */
     void RequestSegment();
     void SegmentRequestWatchdog();
+    /**
+     * \brief Dead-segment recovery: the in-flight segment made no progress for the watchdog bound.
+     * Tears down the (stuck) transport connection, reconnects and re-requests the SAME segment,
+     * skipping the frames already delivered. Bounded by kMaxReconnectsPerSegment.
+     */
+    void RecoverDeadSegment();
     int SendSegmentRequest(uint32_t segmentId, uint32_t bitrate, bool isRetry);
 
     void SendBlank();
@@ -208,12 +214,20 @@ class DashClient : public Application
     uint32_t m_lastWatchdogBytes = 0;  // bytes received as of the previous watchdog tick (progress detection)
     uint32_t m_watchdogStuckTicks = 0; // consecutive watchdog ticks with no progress
     int32_t m_lastCompletedSegmentId; // Last HTTP segment id that fired completion (-1 = none)
+    // Dead-segment recovery state (see RecoverDeadSegment)
+    int32_t m_lastFrameRecvd = -1;          // highest frame id received for the pending segment
+    int32_t m_resumeSegmentId = -1;         // segment being re-fetched after a reconnect (-1 = none)
+    uint32_t m_resumeFromFrame = 0;         // frames < this of m_resumeSegmentId are duplicates: drop
+    uint32_t m_reconnectsForSegment = 0;    // reconnect attempts for the current pending segment
+    uint32_t m_totalReconnects = 0;         // per-client total (printed in GetStats)
+    static const uint32_t kMaxReconnectsPerSegment = 8;
 
     EventId m_keepAliveTimer;
     EventId m_connectWatchdogTimer;
     EventId m_segmentWatchdogTimer;
     EventId m_periodicBufferCheckTimer; // Timer for periodic buffer check when player is paused
     Time m_maxVideoDuration;  // Maximum video duration - stops requesting segments after this time
+    Time m_maxBufferLevel;    // Playout-buffer cap (s): the next request waits until the buffer drains to it (0 = none)
     uint32_t m_maxSegments;   // Maximum number of segments to request (calculated from m_maxVideoDuration using frame duration)
     std::string m_metadataCsvPath;
     DashMetadataIndex m_metadataIndex;

@@ -81,6 +81,14 @@ DashClient::GetTypeId(void)
                                           TimeValue(Seconds(0)),  // 0 = unlimited
                                           MakeTimeAccessor(&DashClient::m_maxVideoDuration),
                                           MakeTimeChecker())
+                            .AddAttribute("MaxBufferLevel",
+                                          "Playout-buffer cap in seconds of content. When the buffered play time "
+                                          "exceeds it, the next segment request is delayed until the buffer drains "
+                                          "back to the cap (dash.js-style stable buffer). 0 = unlimited (the old "
+                                          "behaviour: an uncongested UE bulk-downloads the whole video).",
+                                          TimeValue(Seconds(30)),
+                                          MakeTimeAccessor(&DashClient::m_maxBufferLevel),
+                                          MakeTimeChecker())
                             .AddAttribute("MetadataCsvPath",
                                           "Path to metadata CSV for segment count alignment.",
                                           StringValue(""),
@@ -122,6 +130,7 @@ DashClient::DashClient()
       m_periodicBufferCheckTimer(),
       m_maxVideoDuration(Seconds(0)),
       m_maxSegments(0),
+      m_maxBufferLevel(Seconds(30)),
       m_metadataReady(false),
       m_lastCompletedSegmentId(-1),
       m_lossRateRecent(-1.0),
@@ -323,6 +332,16 @@ DashClient::RequestSegment()
     m_pendingSegmentId = requestSegmentId;
     m_pendingBitRate = m_bitRate;
     m_pendingRetryUsed = false;
+    m_lastFrameRecvd = -1;
+    if (m_resumeSegmentId >= 0 && static_cast<uint32_t>(m_resumeSegmentId) != requestSegmentId)
+    {
+        m_resumeSegmentId = -1; // a different segment: no duplicate-frame filtering
+        m_resumeFromFrame = 0;
+    }
+    if (m_resumeSegmentId < 0)
+    {
+        m_reconnectsForSegment = 0;
+    }
     SendSegmentRequest(requestSegmentId, m_bitRate, false);
     m_requestTime = Simulator::Now();
     m_segment_bytes = 0;
@@ -407,7 +426,58 @@ DashClient::SegmentRequestWatchdog()
         return;
     }
 
-    m_RequestPending = false; // give up on this segment; allow the buffer-underrun path to re-request
+    // ~5 s without a single new byte: the transport connection is dead (observed: a loss burst on the
+    // access link leaves the ns-3 QUIC socket with inflight > window forever, so neither the segment nor a
+    // re-request on the same socket ever moves again). Reconnect and re-fetch the same segment.
+    RecoverDeadSegment();
+}
+
+void
+DashClient::RecoverDeadSegment()
+{
+    if (!m_RequestPending)
+    {
+        return;
+    }
+    if (m_reconnectsForSegment >= kMaxReconnectsPerSegment)
+    {
+        NS_LOG_UNCOND("[DashClient] node " << GetNode()->GetId() << " seg " << m_pendingSegmentId
+                      << " still dead after " << m_reconnectsForSegment << " reconnects at t="
+                      << Simulator::Now().GetSeconds() << "s: giving up on it");
+        m_RequestPending = false; // legacy release: the buffer-underrun path may request the next segment
+        return;
+    }
+    m_reconnectsForSegment++;
+    m_totalReconnects++;
+    NS_LOG_UNCOND("[DashClient] node " << GetNode()->GetId() << " seg " << m_pendingSegmentId
+                  << " dead (bytes=" << m_segment_bytes << " frames=" << (m_lastFrameRecvd + 1)
+                  << ") at t=" << Simulator::Now().GetSeconds() << "s -> reconnect #"
+                  << m_reconnectsForSegment << " and re-request from frame " << (m_lastFrameRecvd + 1));
+    // Re-fetch the SAME segment on the new connection; frames already delivered are dropped as duplicates.
+    m_resumeSegmentId = static_cast<int32_t>(m_pendingSegmentId);
+    m_resumeFromFrame = static_cast<uint32_t>(m_lastFrameRecvd + 1);
+    m_segmentId = m_pendingSegmentId; // rewind: the reconnect's RequestSegment() re-issues this id
+    m_bitRate = m_pendingBitRate;
+    // Tear down the stuck connection. Detach callbacks first so the close of the OLD socket cannot
+    // re-enter StartApplication (ConnectionErrorClosed) on top of the new one.
+    Ptr<Socket> oldSocket = m_socket;
+    m_socket = 0;
+    m_connected = false;
+    m_RequestPending = false;
+    m_pendingRetryUsed = false;
+    m_socketTraceConnected = false;
+    m_segmentWatchdogTimer.Cancel();
+    m_keepAliveTimer.Cancel();
+    m_parser.Reset(); // discard the partial message of the dead stream
+    if (oldSocket)
+    {
+        oldSocket->SetRecvCallback(MakeNullCallback<void, Ptr<Socket>>());
+        oldSocket->SetConnectCallback(MakeNullCallback<void, Ptr<Socket>>(), MakeNullCallback<void, Ptr<Socket>>());
+        oldSocket->SetSendCallback(MakeNullCallback<void, Ptr<Socket>, uint32_t>());
+        oldSocket->SetCloseCallbacks(MakeNullCallback<void, Ptr<Socket>>(), MakeNullCallback<void, Ptr<Socket>>());
+        oldSocket->Close();
+    }
+    Simulator::Schedule(MilliSeconds(1), &DashClient::StartApplication, this); // new socket + connect -> RequestSegment()
 }
 
 void
@@ -576,6 +646,10 @@ DashClient::ConnectionNormalClosed(Ptr<Socket> socket)
 void
 DashClient::ConnectionErrorClosed(Ptr<Socket> socket)
 {
+    if (socket != m_socket)
+    {
+        return; // a replaced (dead) socket closing late must not restart the client
+    }
     NS_LOG_FUNCTION(this << socket);
     NS_LOG_INFO("DashClient " << m_id << ", Connection closed due to error, retrying...");
     m_connectWatchdogTimer.Cancel();
@@ -666,6 +740,18 @@ DashClient::MessageReceived(Packet message)
         return true;
     }
 
+    // Frames of a segment re-fetched after a dead-connection recovery that were already delivered
+    // on the previous connection: drop them (they are already in the player's queue).
+    if (m_resumeSegmentId >= 0 && httpHeader.GetSegmentId() == static_cast<uint32_t>(m_resumeSegmentId) &&
+        mpegHeader.GetFrameId() < m_resumeFromFrame)
+    {
+        return true;
+    }
+    if (httpHeader.GetSegmentId() == m_pendingSegmentId &&
+        static_cast<int32_t>(mpegHeader.GetFrameId()) > m_lastFrameRecvd)
+    {
+        m_lastFrameRecvd = static_cast<int32_t>(mpegHeader.GetFrameId());
+    }
     // Send the frame to the player (with headers intact - PlayFrame will remove them)
     // If it doesn't fit in the buffer, don't continue
     if (!m_player.ReceiveFrame(&message))
@@ -709,6 +795,9 @@ DashClient::MessageReceived(Packet message)
         m_RequestPending = false;
         m_segmentWatchdogTimer.Cancel();
         m_pendingRetryUsed = false;
+        m_resumeSegmentId = -1;
+        m_resumeFromFrame = 0;
+        m_reconnectsForSegment = 0;
         m_segmentFetchTime = Simulator::Now() - m_requestTime;
 
         MaybeAttachSocketTraces();
@@ -757,6 +846,16 @@ DashClient::MessageReceived(Packet message)
         if (prevBitrate != m_bitRate)
         {
             m_rateChanges++;
+        }
+        // Playout-buffer cap (MaxBufferLevel): never hold more than the cap; wait for the buffer to drain
+        // back to it before the next request (the ABR's own delay still applies if larger).
+        if (m_maxBufferLevel > Seconds(0) && currDt > m_maxBufferLevel)
+        {
+            Time capDelay = currDt - m_maxBufferLevel;
+            if (capDelay > bufferDelay)
+            {
+                bufferDelay = capDelay;
+            }
         }
 
         std::cout << Simulator::Now().GetSeconds() << " ue-id: " << GetNode()->GetId()
@@ -828,7 +927,8 @@ DashClient::GetStats()
               << " minRate: " << m_player.m_minRate
               << " AvgDt: " << m_sumDt.GetSeconds() / m_player.m_framesPlayed
               << " changes: " << m_rateChanges
-              << " TotalPlaybackTime: " << m_player.m_totalPlaybackTime.GetSeconds() << std::endl;
+              << " TotalPlaybackTime: " << m_player.m_totalPlaybackTime.GetSeconds()
+              << " reconnects: " << m_totalReconnects << std::endl;
 }
 
 void

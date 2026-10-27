@@ -28,13 +28,15 @@ COND_ORDER = [1, 2, 3, 4, 5]
 # the baselines. (Older arms Greedy_sem/Svaa/Sftm/Fdash/Osmp are not in this benchmark.)
 # Paper label is "Ours" - no coined method name; the teacher is the training target, not an oracle
 # (see docs/paper-outline.md).
+# 26-video full-length benchmark (2026-10-27): four arms - Ours, the two RobustMPC controllers and BOLA
+# (the only classic heuristic retained; RAAHS/AAASH/FDASH/Pensieve dropped from the paper tables).
+# "BolaFull" = BOLA re-run natively on whole videos (Quic_artifacts/BolaFull), same session rule as the
+# bridge arms; the old truncated 14-segment collection runs stay under Quic_artifacts/Bola.
 ALGOS = [
     ("AiDash",   {"name": "Ours", "color": "#d62728", "marker": "D"}),
     ("Qmpc",     {"name": "Quality-MPC", "color": "#ff7f0e", "marker": "v"}),   # RobustMPC on the scoring QoE (content-aware control)
     ("Mpc",      {"name": "RobustMPC", "color": "#9467bd", "marker": "^"}),     # RobustMPC on QoE_lin (Yin'15; Pensieve's objective)
-    ("Pensieve", {"name": "Pensieve", "color": "#2ca02c", "marker": "s"}),
-    ("Aaash",    {"name": "AAASH", "color": "#8c564b", "marker": "P"}),
-    ("Bola",     {"name": "BOLA",  "color": "#1f77b4", "marker": "o"}),
+    ("BolaFull", {"name": "BOLA",  "color": "#1f77b4", "marker": "o"}),
 ]
 # Bridge arms (decisions.jsonl under Quic_artifacts/<stem>/<video>/run_<cond>/ + <stem>_shards teacher
 # shards, produced by benchmark/score_bridge_arm.sh). AiDash keeps its own legacy layout for now.

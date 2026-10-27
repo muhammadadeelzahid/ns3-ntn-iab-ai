@@ -29,8 +29,8 @@ COND_ORDER = [1, 2, 3, 4, 5]
 _HERE = os.path.dirname(os.path.abspath(__file__))
 # Full 26-video stage-B test split (BENCH_VIDS=<file> selects another list); missing cells are skipped.
 VIDS = [v for v in open(os.environ.get("BENCH_VIDS", os.path.join(_HERE, "test_videos_26.txt"))).read().split() if v]
-POLICIES = [("AiDash", "Ours"), ("Qmpc", "Quality-MPC"), ("Mpc", "RobustMPC"), ("Pensieve", "Pensieve"),
-            ("Aaash", "AAASH"), ("Bola", "BOLA")]   # RAAHS removed from the paper benchmark
+POLICIES = [("AiDash", "Ours"), ("Qmpc", "Quality-MPC"), ("Mpc", "RobustMPC"),
+            ("BolaFull", "BOLA")]   # 4-arm full-length benchmark (paper_style.ALGOS)
 BRIDGE_ARMS = ("Pensieve", "Mpc", "Qmpc", "Greedy")   # standard-layout bridge runs with chosen_rung
 # Degenerate 4.5 Mb/s cell (single-UE scheduler starvation) excluded for all policies, matching the
 # QoE table; it is analyzed separately as a closed-loop fairness finding.

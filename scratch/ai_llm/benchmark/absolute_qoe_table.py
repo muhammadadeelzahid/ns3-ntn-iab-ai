@@ -34,7 +34,7 @@ from scripts.dp_oracle import load_reward_config                # noqa: E402
 # scoring script runs under - and this script writes tables only, no plots). Keep in sync with paper_style.
 # RAAHS removed from the paper benchmark (2026-10). Pensieve is the strongest/learned baseline.
 ALGOS = [("AiDash", {"name": "LLM-ABR"}), ("Qmpc", {"name": "Quality-MPC"}), ("Mpc", {"name": "RobustMPC"}),
-         ("Pensieve", {"name": "Pensieve"}), ("Aaash", {"name": "AAASH"}), ("Bola", {"name": "BOLA"})]
+         ("BolaFull", {"name": "BOLA"})]   # BolaFull = BOLA re-run on whole videos (paper_style.ALGOS)
 BRIDGE_ARMS = ("Pensieve", "Mpc", "Qmpc", "Greedy")   # standard-layout bridge runs (score_bridge_arm.sh)
 COND = {1: "100Gb/s", 2: "36Mbps", 3: "18Mbps", 4: "9Mbps", 5: "4.5Mbps"}
 COND_ORDER = [1, 2, 3, 4, 5]
@@ -46,7 +46,7 @@ CFG = os.path.join(_REPO, "scratch", "ai_llm", "config", "oracle_reward.json")
 # Benchmark video set: the full 26-video stage-B test split (BENCH_VIDS=<file> to select another list,
 # e.g. the old 10-video shrunk matrix). Missing cells for an arm are skipped, so partial arms still tabulate.
 VIDS = [v for v in open(os.environ.get("BENCH_VIDS", os.path.join(_HERE, "test_videos_26.txt"))).read().split() if v]
-HEURS = ["Aaash", "Bola"]
+HEURS = ["BolaFull"]
 # Degenerate cell excluded from the QoE means for ALL policies: a deterministic single-UE scheduler
 # starvation at 4.5 Mb/s (Pensieve stalls one UE 83 s; analyzed separately as a closed-loop finding).
 EXCLUDE_CELLS = {("pexels_34254266", 5)}

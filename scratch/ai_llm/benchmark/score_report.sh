@@ -25,12 +25,17 @@ cd "${REPO}"
 source .venv/bin/activate
 export PYTHONPATH="${REPO}/scratch:${PYTHONPATH:-}"
 
-echo "[score] building teacher jsonl for ${ALGO} ..."
+# TEACHER=greedy (default): the greedy down-only causal teacher from config/oracle_reward.json - the
+# %-of-oracle reference every arm must share (benchmark-plan.md 4.0; = <ARM>_teacher_down /
+# AiDash/shards_down / score_bridge_arm.sh). Needs no dp_oracle labels. TEACHER=oracle = the old acausal
+# DP-ceiling reference (needs oracle_labels_state.jsonl per video from dp_oracle.slurm).
+TEACHER="${TEACHER:-greedy}"
+echo "[score] building teacher jsonl for ${ALGO} (teacher=${TEACHER}) ..."
 rm -rf "${TEACH}"
 python3 scratch/ai_llm/dataset_builder.py \
   --artifacts-root Quic_artifacts --algo-short "${ALGO}" \
   --metadata-dir "${META}" --output-dir "${TEACH}" \
-  --teacher-source oracle --merge-output "${TEACH}/all.jsonl"
+  --teacher-source "${TEACHER}" --merge-output "${TEACH}/all.jsonl"
 
 # Quic_artifacts/<ALGO> also holds the training-campaign videos (non-test). The benchmark is the held-out
 # test split ONLY, so prune the teacher-dir to the test videos — perceptual_qoe only scores runs with a
@@ -45,6 +50,12 @@ for shard in "${TEACH}"/*_run_*.jsonl; do
   grep -qxF "${vid}" "${TEST_LIST}" || rm -f "${shard}"
 done
 echo "[score] teacher shards kept: $(ls "${TEACH}"/*_run_*.jsonl 2>/dev/null | wc -l)"
+if [ "${TEACHER}" = "greedy" ]; then
+  # Persist the scoring shards where absolute_qoe_table / per_video_qoe_ci read them.
+  KEEP="Quic_artifacts/${ALGO%_dscore}_teacher_down"
+  rm -rf "${KEEP}"; mkdir -p "${KEEP}"; cp "${TEACH}"/*_run_*.jsonl "${KEEP}"/
+  echo "[score] teacher shards persisted -> ${KEEP}"
+fi
 
 echo "[score] scoring ${ALGO} runs (test split only) ..."
 python3 scratch/ai_llm/perceptual_qoe.py \

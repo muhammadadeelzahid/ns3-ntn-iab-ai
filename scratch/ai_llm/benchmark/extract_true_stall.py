@@ -168,11 +168,7 @@ def main():
     arms = {"AiDash": model_stall(logdir=LOGS_BENCH),
             "Qmpc": model_stall("Qmpc", logdir=os.path.join(_REPO, "logs_bench_qmpc")),
             "Mpc": model_stall("Mpc", logdir=os.path.join(_REPO, "logs_bench_mpc")),
-            "Pensieve": model_stall("Pensieve", logdir=os.path.join(_REPO, "logs_bench_pensieve")),
-            "Bola": heuristic_stall("Bola"),
-            "Raahs": heuristic_stall("Raahs"),
-            "Aaash": heuristic_stall("Aaash"),
-            "Fdash": heuristic_stall("Fdash")}
+            "BolaFull": heuristic_stall("BolaFull")}   # BOLA re-run on whole videos (4-arm benchmark)
     outcsv = os.path.join(_HERE, "results", "true_stall.csv")
     with open(outcsv, "w", newline="") as fh:
         w = csv.writer(fh)

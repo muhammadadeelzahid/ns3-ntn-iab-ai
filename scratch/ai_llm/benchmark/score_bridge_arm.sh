@@ -101,13 +101,18 @@ echo "[score:$STEM] 2/4 dp_oracle -> oracle_labels_state.jsonl ..."
 python3 scripts/dp_oracle.py --artifacts-root Quic_artifacts --algo-short "$STEM" \
   --metadata-dir "$META" --reward-config "$REWARD" --run-glob 'run_*' --workers "${WORKERS:-8}"
 
-echo "[score:$STEM] 3/4 decisions -> teacher shards ..."
-rm -rf "$TEACH"; mkdir -p "$TEACH"
+echo "[score:$STEM] 3/4 decisions -> teacher shards (dp_oracle join) -> GREEDY down-only relabel ..."
+rm -rf "$TEACH" "${TEACH}_down"; mkdir -p "$TEACH"
 python3 scratch/ai_llm/benchmark/decisions_to_trainrows.py "$ROOT" "$VLIST" "$META" "$TEACH"
-rm -rf "$SHARDS_KEEP"; mkdir -p "$SHARDS_KEEP"; cp "$TEACH"/*.jsonl "$SHARDS_KEEP"/   # absolute_qoe_table reads <Stem>_shards
+# The %-of-oracle reference must be the SAME teacher for every arm: the greedy down-only causal teacher
+# (benchmark-plan.md 4.0; what <ARM>_teacher_down and AiDash/shards_down carry). decisions_to_trainrows
+# writes the acausal DP-oracle rung, so relabel here - the old Pensieve chain skipped this and scored
+# Pensieve against the DP ceiling (a stricter reference than the other arms got).
+python3 scratch/ai_llm/benchmark/relabel_greedy.py "$TEACH" "${TEACH}_down" --reward-config "$REWARD"
+rm -rf "$SHARDS_KEEP"; mkdir -p "$SHARDS_KEEP"; cp "${TEACH}_down"/*.jsonl "$SHARDS_KEEP"/   # absolute_qoe_table reads <Stem>_shards
 
 echo "[score:$STEM] 4/4 score_v2_perceptual -> $RESULTS ..."
-python3 scratch/ai_llm/benchmark/score_v2_perceptual.py "$ROOT" "$TEACH" "$VLIST" "$REWARD" "$RESULTS"
+python3 scratch/ai_llm/benchmark/score_v2_perceptual.py "$ROOT" "${TEACH}_down" "$VLIST" "$REWARD" "$RESULTS"
 
 rm -rf "$TMP"
 echo "[score:$STEM] DONE -> $RESULTS  (shards: $SHARDS_KEEP)"

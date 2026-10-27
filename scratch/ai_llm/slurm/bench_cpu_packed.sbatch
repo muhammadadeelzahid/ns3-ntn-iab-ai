@@ -17,7 +17,7 @@
 #SBATCH --job-name=bench-cpu
 #SBATCH --partition=skylake
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=48
+#SBATCH --cpus-per-task=40
 #SBATCH --mem-per-cpu=3800M
 #SBATCH --time=0-12:00:00
 #SBATCH --output=slurm-%x-%j.out
@@ -48,10 +48,13 @@ mkdir -p "$LOGDIR"
 
 echo "=== cpu worker: POLICY=$POLICY STEM=$STEM MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR numUes=$NUMUES simStop=$SIMSTOP out=$OUT_ROOT logs=$LOGDIR ==="
 
-sim_stop_for() {  # <metadata csv> -> seconds (whole video + 30 s tail), or the fixed SIMSTOP
+sim_stop_for() {  # <metadata csv> -> seconds, or the fixed SIMSTOP
+  # auto = EXACTLY the native heuristic worker's rule (dash_trace_worker.slurm): NSEG*4 + 30, floor 90,
+  # cap 600 - so bridge arms and natively-run heuristics stream the same session length per video.
   if [ "$SIMSTOP" = "auto" ]; then
     local nseg; nseg=$(($(wc -l < "$1") - 1))
-    awk -v n="$nseg" 'BEGIN{printf "%d", n*3.3+30}'
+    local s=$((nseg * 4 + 30)); [ "$s" -lt 90 ] && s=90; [ "$s" -gt 600 ] && s=600
+    echo "$s"
   else
     echo "$SIMSTOP"
   fi

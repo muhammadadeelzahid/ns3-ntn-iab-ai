@@ -133,6 +133,15 @@ QoE 7–8 % worse than the served seeds — inconclusive offline; the live Phase
 - Regenerate all figures/tables from the clean results (archive old `results/` as `results_prevmaf/`).
 - **Commit:** "results: clean 50-cell benchmark with CIs + significance".
 
+**PHASE 4 PROGRESS (2026-10-27, commit f6414cf):** first full-matrix pass of Ours submitted — 130 cells,
+`checkpoints_clean/abr_v2_seed42.pt` (best clean val macro-F1 0.790) served with
+`feature_scaler_semantic_clean.json`, the shared 180 s session rule (`bench_model_packed.sbatch` now
+defaults to `SIMSTOP=auto`), 11 lgpu slices of 12 rows (jobs 8127598–8127608, KPAR=6) →
+`Quic_artifacts/AiDashClean` + `logs_bench_aidashclean`. Scoring = `score_bridge_arm.sh AiDashClean`;
+tables/figures read it with `MODEL_STEM=AiDashClean` (`benchmark/model_arm.py`), the legacy
+`AiDash/bench_down_scored` layout stays the default until Phase 4 is scored. Seeds 41/43 and CIs follow once
+the seed-42 pass and the three CPU arms are in.
+
 ## Phase 5 — Content-vs-network ablation
 - With VMAF fixed, run the ablation a journal will expect: network-only vs content+network variant of
   *our* policy, on the clean metric, to quantify the content contribution directly (the thing the

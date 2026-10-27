@@ -12,11 +12,16 @@ Arms (paper_style.ALGOS): **Ours** (`AiDash`, LLM policy), **Quality-MPC** (`Qmp
 for pol in qmpc mpc; do for s in "1 33" "34 66" "67 99" "100 130"; do set -- $s
   MATRIX=Quic_artifacts/model_matrix_1run.csv POLICY=$pol KPAR=20 ROW_START=$1 ROW_END=$2 \
     sbatch --job-name=bench-$pol-$1 scratch/ai_llm/slurm/bench_cpu_packed.sbatch; done; done
-# Ours (Phase 4): lgpu packed worker, clean checkpoint + ITS scaler, same session rule
-MATRIX=Quic_artifacts/model_matrix_1run.csv CKPT=scratch/ai_llm/checkpoints_clean/abr_v2_seed42.pt \
-  SEMANTIC_SCALER=scratch/ai_llm/config/feature_scaler_semantic_clean.json SIMSTOP=<per-row auto - port
-  sim_stop_for() from bench_cpu_packed> OUT_ROOT=Quic_artifacts/AiDashClean KPAR=6 \
-  sbatch scratch/ai_llm/slurm/bench_model_packed.sbatch
+# Ours (Phase 4): lgpu packed worker, clean checkpoint + ITS scaler, SIMSTOP=auto (default) = same session
+# rule. ~4-5 h wall per 180 s cell with 6 servers sharing one L40s (KPAR=6 is the OOM-safe cap), so a 12 h
+# job finishes ~12 cells: submit 12-row slices (11 jobs); existing non-empty cells are skipped on resubmit.
+for s in "1 12" "13 24" "25 36" "37 48" "49 60" "61 72" "73 84" "85 96" "97 108" "109 120" "121 130"; do set -- $s
+  MATRIX=Quic_artifacts/model_matrix_1run.csv CKPT=scratch/ai_llm/checkpoints_clean/abr_v2_seed42.pt \
+    SEMANTIC_SCALER=scratch/ai_llm/config/feature_scaler_semantic_clean.json \
+    OUT_ROOT=Quic_artifacts/AiDashClean LOGDIR=logs_bench_aidashclean KPAR=6 ROW_START=$1 ROW_END=$2 \
+    sbatch --job-name=bench-ours-$1 scratch/ai_llm/slurm/bench_model_packed.sbatch; done
+# Score Ours exactly like the other bridge arms (fallback gate, greedy relabel, AiDashClean_shards):
+#   bash scratch/ai_llm/benchmark/score_bridge_arm.sh AiDashClean
 ```
 Outputs: `Quic_artifacts/<Stem>/<video>/run_<seed>_<rtag>/decisions.jsonl`, logs `logs_bench_<stem>/`.
 Cells with an existing non-empty decisions.jsonl are skipped (safe to resubmit slices).
@@ -52,6 +57,10 @@ python3 scratch/ai_llm/benchmark/make_paper_table.py ; python3 scratch/ai_llm/be
 python3 scratch/ai_llm/benchmark/make_paper_figs.py
 ```
 `BENCH_VIDS=<file>` switches the video list (default `test_videos_26.txt`).
+`MODEL_STEM=AiDashClean` (see `benchmark/model_arm.py`) points the model arm "Ours" of every table/figure
+script at the Phase-4 re-run (`Quic_artifacts/AiDashClean`, `AiDashClean_shards`, `logs_bench_aidashclean`,
+`results/AiDashClean.txt`); unset = the legacy 2026-07 layout (`AiDash/bench_down_scored`). Run the four
+commands above with `MODEL_STEM=AiDashClean` exported once Phase 4 is scored.
 
 ## Tests
 `PYTHONPATH=scratch .venv/bin/python scratch/ai_llm/tests/test_mpc_policy.py` (7 tests: objective parity with

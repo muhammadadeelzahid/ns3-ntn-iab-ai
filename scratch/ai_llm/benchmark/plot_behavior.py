@@ -19,6 +19,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 import sys
 sys.path.insert(0, _HERE)
 from paper_style import ALGOS, apply_style, save_fig, COL_SINGLE  # noqa: E402
+import model_arm  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 
 _REPO = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
@@ -42,7 +43,7 @@ def _sessions_decisions(dec_glob):
 
 
 def _sessions_model():
-    return _sessions_decisions(os.path.join(Q, "AiDash", "bench_down_scored", "*", "run_*", "decisions.jsonl"))
+    return _sessions_decisions(os.path.join(Q, model_arm.dec_subdir(), "*", "run_*", "decisions.jsonl"))
 
 
 def _sessions_heuristic(arm):

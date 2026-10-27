@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(_REPO, "scratch"))
 sys.path.insert(0, _HERE)
 from ai_llm.perceptual_qoe import score_run                     # noqa: E402
 from scripts.dp_oracle import load_reward_config                # noqa: E402
+import model_arm                                                # noqa: E402  (MODEL_STEM switch)
 
 # local copies of paper_style constants (paper_style imports matplotlib, which is absent from the .venv this
 # scoring script runs under - and this script writes tables only, no plots). Keep in sync with paper_style.
@@ -62,10 +63,8 @@ def true_stall_sums():
 
 def run_inputs(arm, video, cond):
     """(sim_log, decisions_jsonl, teacher_shard) for one run; sim_log/decisions_jsonl are mutually exclusive."""
-    if arm == "AiDash":
-        dec = os.path.join(Q, "AiDash", "bench_down_scored", video, "run_%d" % cond, "decisions.jsonl")
-        shard = os.path.join(Q, "AiDash", "shards_down", "%s_run_%d.jsonl" % (video, cond))
-        return None, dec, shard
+    if arm == "AiDash":   # model arm: layout selected by MODEL_STEM (see model_arm.py)
+        return None, model_arm.decisions(video, cond), model_arm.shard(video, cond)
     if arm in BRIDGE_ARMS:   # standard-layout bridge runs (run_<cond>) + persisted teacher shards
         dec = os.path.join(Q, arm, video, "run_%d" % cond, "decisions.jsonl")
         shard = os.path.join(Q, "%s_shards" % arm, "%s_run_%d.jsonl" % (video, cond))

@@ -21,6 +21,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(_REPO, "scratch"))
 from ai_llm.metadata_loader import load_metadata_index, LADDER_LEVELS  # noqa: E402
+import model_arm  # noqa: E402  (MODEL_STEM switch for the model arm's layout)
 
 META = "/project/6030214/adeel/abr/output/metadata"
 Q = os.path.join(_REPO, "Quic_artifacts")
@@ -57,7 +58,7 @@ def _jain(xs):
 # use the SAME uniform method (chosen rung -> metadata actual_bitrate/VMAF) so J is comparable.
 def _dec_path(arm, v, c):
     if arm == "AiDash":
-        return os.path.join(Q, "AiDash", "bench_down_scored", v, "run_%d" % c, "decisions.jsonl")
+        return model_arm.decisions(v, c)
     if arm in BRIDGE_ARMS:
         return os.path.join(Q, arm, v, "run_%d" % c, "decisions.jsonl")
     return os.path.join(Q, "%s_dscore" % arm, v, "run_%d" % c, "trace_decisions.jsonl")

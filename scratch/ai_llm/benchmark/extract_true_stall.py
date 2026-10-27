@@ -25,6 +25,8 @@ import re
 from collections import defaultdict
 from statistics import mean
 
+import model_arm  # MODEL_STEM switch: where the model arm ("AiDash") keeps decisions + worker logs
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
 Q = os.path.join(_REPO, "Quic_artifacts")
@@ -165,7 +167,8 @@ def heuristic_stall(arm):
 
 def main():
     # Each bridge arm resolves sim.log from ITS OWN worker log dir only (never another arm's).
-    arms = {"AiDash": model_stall(logdir=LOGS_BENCH),
+    print(model_arm.describe())
+    arms = {"AiDash": model_stall(model_arm.dec_subdir(), logdir=model_arm.logdir()),
             "Qmpc": model_stall("Qmpc", logdir=os.path.join(_REPO, "logs_bench_qmpc")),
             "Mpc": model_stall("Mpc", logdir=os.path.join(_REPO, "logs_bench_mpc")),
             "BolaFull": heuristic_stall("BolaFull")}   # BOLA re-run on whole videos (4-arm benchmark)

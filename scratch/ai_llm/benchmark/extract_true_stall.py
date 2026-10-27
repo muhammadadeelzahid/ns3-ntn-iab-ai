@@ -28,8 +28,8 @@ from statistics import mean
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
 Q = os.path.join(_REPO, "Quic_artifacts")
-VIDS = ["big_buck_bunny", "chef_cooking", "city_night_traffic", "hiking", "peace_autumn_lake",
-        "pexels_28887170", "pexels_30886101", "pexels_34254266", "pexels_34797065", "pexels_35132716"]
+# Full 26-video stage-B test split (BENCH_VIDS=<file> selects another list); missing cells are skipped.
+VIDS = [v for v in open(os.environ.get("BENCH_VIDS", os.path.join(_HERE, "test_videos_26.txt"))).read().split() if v]
 SEED2COND = {1: 1, 3: 2, 5: 3, 7: 4, 9: 5}
 CUR_RE = re.compile(r"current interruption_time:\s*([0-9.]+)\s*s")
 UPD_RE = re.compile(r"Updated interruption_time:\s*([0-9.]+)\s*s")
@@ -97,60 +97,82 @@ def true_stall_per_ue(text, segment_count):
     return vals
 
 
-def _find_sim_log(arm_subdir, video, cond, seed=None):
-    """Locate a run's sim.log: run-dir first, then the per-cell paper logs in logs_bench/ (model arms,
-    whose sim.log was captured there, matched by video+rate; pick the most complete run)."""
+def _find_sim_log(arm_subdir, video, cond, seed=None, logdir=None):
+    """Locate a run's sim.log: run-dir first, then - for bridge arms, whose sim.log is captured in the
+    worker's per-cell log - the arm's OWN log dir (`logdir`), matched by video+rate (most complete run
+    wins). The fallback is confined to `logdir`: with logdir=None there is no fallback, so an arm can
+    never be scored with another arm's ns-3 log (the old global logs_bench/ fallback did exactly that
+    for Pensieve, whose logs live in logs_bench_pensieve/)."""
     run_tag = "run_%d" % (seed if seed is not None else cond)
     rundir = os.path.join(Q, arm_subdir, video, run_tag, "sim.log")
     if os.path.isfile(rundir):
         return rundir
-    cands = glob.glob(os.path.join(LOGS_BENCH, "task_*_%s_%s_run*.log" % (video, RATE[cond])))
+    if logdir is None:
+        return None
+    cands = glob.glob(os.path.join(logdir, "task_*_%s_%s_run*.log" % (video, RATE[cond])))
     if cands:
         return max(cands, key=lambda f: open(f, errors="ignore").read().count("ue-id:"))
     return None
 
 
-def model_stall(dec_subdir=os.path.join("AiDash", "bench_down_scored")):
-    """{(video,cond): (mean-per-UE, sum-over-UEs) TRUE rebuffer} for a bridge arm (AiDash model or
-    Pensieve), from the run's ns-3 sim.log via true_stall_per_ue — which COUNTS never-resumed
+def model_stall(dec_subdir=os.path.join("AiDash", "bench_down_scored"), logdir=LOGS_BENCH):
+    """{(video,cond): (mean-per-UE, sum-over-UEs) TRUE rebuffer} for a bridge arm (AiDash model,
+    Pensieve, Mpc, Qmpc), from the run's ns-3 sim.log via true_stall_per_ue — which COUNTS never-resumed
     permanent freezes (the ones decisions.jsonl's resume-finalized interruption_time_s reported as 0).
-    Falls back silently to no entry when the run's sim.log cannot be located."""
+    `logdir` = that arm's worker log dir (logs_bench, logs_bench_pensieve, logs_bench_qmpc, ...). Cells
+    whose sim.log cannot be located are reported once and left out (NOT substituted)."""
     out = {}
+    missing = []
     for v in VIDS:
         sc = _segcount(v)
         for cond in range(1, 6):
-            log = _find_sim_log(dec_subdir, v, cond)
+            log = _find_sim_log(dec_subdir, v, cond, logdir=logdir)
             if log is None:
+                missing.append("%s/run_%d" % (v, cond))
                 continue
             vals = true_stall_per_ue(open(log, errors="ignore").read(), sc)
             if vals:
                 out[(v, cond)] = (mean(vals), sum(vals))
+    if missing:
+        print("  [%s] no sim.log for %d/%d cells (left out): %s%s" % (
+            dec_subdir, len(missing), 5 * len(VIDS), ", ".join(missing[:6]), " ..." if len(missing) > 6 else ""))
     return out
 
 
 def heuristic_stall(arm):
     """{(video,cond): (mean-per-UE, sum-over-UEs)} from each run's sim.log via true_stall_per_ue
     (same freeze-aware rule as the model arms, replacing the old pre-finalize 'current
-    interruption_time' read which also missed never-resumed freezes)."""
+    interruption_time' read which also missed never-resumed freezes). Reads the per-condition view
+    <ARM>_dscore/<v>/run_<cond> (symlinks built by build_dscore_links.py from each run's
+    run_manifest.json link_rate), so arms whose seed->rate order differs (Fdash, Osmp) resolve correctly."""
     out = {}
+    missing = []
     for v in VIDS:
         sc = _segcount(v)
-        for seed, cond in SEED2COND.items():
-            log = _find_sim_log(arm, v, cond, seed=seed)
+        for cond in range(1, 6):
+            log = _find_sim_log("%s_dscore" % arm, v, cond)
             if log is None:
+                missing.append("%s/run_%d" % (v, cond))
                 continue
             vals = true_stall_per_ue(open(log, errors="ignore").read(), sc)
             if vals:
                 out[(v, cond)] = (mean(vals), sum(vals))
+    if missing:
+        print("  [%s_dscore] no sim.log for %d/%d cells (left out): %s%s" % (
+            arm, len(missing), 5 * len(VIDS), ", ".join(missing[:6]), " ..." if len(missing) > 6 else ""))
     return out
 
 
 def main():
-    arms = {"AiDash": model_stall(),
-            "Pensieve": model_stall("Pensieve"),
+    # Each bridge arm resolves sim.log from ITS OWN worker log dir only (never another arm's).
+    arms = {"AiDash": model_stall(logdir=LOGS_BENCH),
+            "Qmpc": model_stall("Qmpc", logdir=os.path.join(_REPO, "logs_bench_qmpc")),
+            "Mpc": model_stall("Mpc", logdir=os.path.join(_REPO, "logs_bench_mpc")),
+            "Pensieve": model_stall("Pensieve", logdir=os.path.join(_REPO, "logs_bench_pensieve")),
             "Bola": heuristic_stall("Bola"),
             "Raahs": heuristic_stall("Raahs"),
-            "Aaash": heuristic_stall("Aaash")}
+            "Aaash": heuristic_stall("Aaash"),
+            "Fdash": heuristic_stall("Fdash")}
     outcsv = os.path.join(_HERE, "results", "true_stall.csv")
     with open(outcsv, "w", newline="") as fh:
         w = csv.writer(fh)
@@ -161,8 +183,10 @@ def main():
     print("wrote", outcsv)
     print("\n%-8s | %6s %6s %6s %6s %6s | %7s | n   (mean per-UE stall, s)" %
           ("arm", "100G", "36M", "18M", "9M", "4.5M", "overall"))
-    for arm in ("AiDash", "Pensieve", "Raahs", "Aaash", "Bola"):
-        d = arms[arm]
+    for arm, d in arms.items():
+        if not d:
+            print("%-8s | (no cells)" % arm)
+            continue
         per_c = {c: [m for (v, cc), (m, s) in d.items() if cc == c] for c in range(1, 6)}
         cells = [mean(per_c[c]) if per_c[c] else float("nan") for c in range(1, 6)]
         allv = [m for (m, s) in d.values()]

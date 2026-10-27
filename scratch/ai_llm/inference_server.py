@@ -34,11 +34,15 @@ sys.path.insert(0, _HERE)                    # scratch/ai_llm/ -> enables infere
 
 try:
     from ai_llm.inference import LlmAbrPolicy, PensievePolicy
+    from ai_llm.greedy_teacher import greedy_rung as _teacher_greedy_rung
     from ai_llm.metadata_loader import load_metadata_index, LADDER_LEVELS
+    from ai_llm.mpc_policy import RobustMpcPolicy
     from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
 except ImportError:  # run directly from scratch/ai_llm
     from inference import LlmAbrPolicy, PensievePolicy
+    from greedy_teacher import greedy_rung as _teacher_greedy_rung
     from metadata_loader import load_metadata_index, LADDER_LEVELS
+    from mpc_policy import RobustMpcPolicy
     from paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
 
 
@@ -71,21 +75,15 @@ def _feasible_rung(throughput_bps: float, segment_meta, safety: float,
 
 
 def _greedy_rung(thr, buf, sizes, vmafs, prev_vmaf, sem, cut, W) -> int:
-    """Closed-loop greedy-reward CAUSAL teacher as a serving policy (mirrors benchmark/relabel_greedy.py
-    greedy_rung EXACTLY, incl. the thr_safety download-time discount). Per segment, pick the rung that
+    """Closed-loop greedy-reward CAUSAL teacher as a serving policy. Per segment, pick the rung that
     maximises the immediate QoE reward using only present info, so this is the deployable causal ceiling
-    the LLM is trained to imitate. No no-stall guard (pure teacher)."""
-    thr_eff = max(thr * W.get("thr_safety", 1.0), 1.0)
-    best, bi = -1e18, 0
-    for r in range(len(LADDER_LEVELS)):
-        dl = 8.0 * sizes[r] / thr_eff
-        rebuf = max(0.0, dl - buf)
-        sw = 0.0 if prev_vmaf is None else W["w_switch"] * abs(vmafs[r] - prev_vmaf) * (1.0 - W["scene_cut_discount"] * cut)
-        q = W["w_vmaf"] * sem * vmafs[r] + W.get("w_quality_sensitive", 0.0) * sem * vmafs[r]
-        rew = q - W["w_stall"] * rebuf - sw
-        if rew > best:
-            best, bi = rew, r
-    return bi
+    the LLM is trained to imitate. No no-stall guard (pure teacher).
+
+    Delegates to greedy_teacher.greedy_rung - the single source of truth shared with the offline labels
+    (benchmark/relabel_greedy.py, dataset_builder) and the scorer (dp_oracle._switch_penalty) - so serve ==
+    train, including switch_mode=down_only. The previous local copy had drifted: it always applied the
+    symmetric |dVMAF| switch penalty and ignored switch_mode."""
+    return _teacher_greedy_rung(thr, buf, sizes, vmafs, prev_vmaf, sem, cut, W)
 
 
 def log(msg: str) -> None:
@@ -95,10 +93,12 @@ def log(msg: str) -> None:
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Torch policy inference server (stdin/stdout JSON).")
     ap.add_argument("--checkpoint", default=None, help="Trained policy checkpoint (V0/V1/V2).")
-    ap.add_argument("--policy", choices=["model", "greedy", "pensieve"], default="model",
+    ap.add_argument("--policy", choices=["model", "greedy", "pensieve", "mpc", "qmpc"], default="model",
                     help="'model' = trained LLM policy; 'greedy' = causal greedy-reward teacher rule "
                          "(no LLM, no guard) - the deployable causal ceiling the model imitates; "
-                         "'pensieve' = Pensieve A3C baseline (network-only, no guard).")
+                         "'pensieve' = Pensieve A3C baseline (network-only, no guard); "
+                         "'mpc' = RobustMPC (Yin'15) on the linear bitrate QoE (network-only, no guard); "
+                         "'qmpc' = RobustMPC on the benchmark scoring QoE (content-aware control, no guard).")
     ap.add_argument("--reward-config", default=os.path.join(_HERE, "config", "oracle_reward.json"),
                     help="Reward weights + semantic-weight mixture for --policy greedy.")
     ap.add_argument("--w-stall", type=float, default=None, help="Override w_stall for --policy greedy.")
@@ -158,6 +158,14 @@ def main() -> None:
         policy = PensievePolicy(checkpoint_path=args.checkpoint, device=args.device)
         log("pensieve policy loaded (checkpoint=%s, device=%s, total_chunks=%d)" % (
             args.checkpoint, getattr(policy, "_device", "?"), total_chunks))
+    elif args.policy in ("mpc", "qmpc"):
+        # RobustMPC baselines (torch-free, CPU). 'qmpc' optimises the scoring QoE from --reward-config
+        # (same file + semantic weights as --policy greedy); 'mpc' the classic linear bitrate QoE.
+        policy = RobustMpcPolicy(metadata_index, objective=("qoe" if args.policy == "qmpc" else "linear"),
+                                 reward_config_path=args.reward_config)
+        log("%s policy: RobustMPC objective=%s horizon=%d hist=%d seg_dur=%.1fs max_buf=%.0fs segments=%d" % (
+            args.policy, policy.objective, policy.horizon, policy.hist_len, policy.seg_dur, policy.max_buffer,
+            policy.n_segments))
     else:
         policy = LlmAbrPolicy(
             checkpoint_path=args.checkpoint,
@@ -224,6 +232,15 @@ def main() -> None:
                 decision = policy.predict(state, segment_meta, chunks_remaining, total_chunks)
                 resp = {"chosen_bitrate_bps": int(decision.chosen_bitrate_bps),
                         "delay_s": float(decision.delay_s), "reason": decision.reason}
+            except Exception as exc:  # pylint: disable=broad-except
+                resp = {"fallback": True, "reason": "policy_error:%s" % exc}
+        elif args.policy in ("mpc", "qmpc"):
+            # RobustMPC baselines (NO no-stall guard - as published). seg0 = 0-indexed segment to fetch next;
+            # the policy rebuilds the realized throughput sample of seg0-1 from the rung it chose for it.
+            seg0 = seg_id - 1 if metadata_index.get(seg_id - 1) is not None else seg_id
+            try:
+                rung, reason = policy.predict(req, seg0)
+                resp = {"chosen_bitrate_bps": int(NS3_RATE_LADDER_BPS[rung]), "delay_s": 0.0, "reason": reason}
             except Exception as exc:  # pylint: disable=broad-except
                 resp = {"fallback": True, "reason": "policy_error:%s" % exc}
         else:

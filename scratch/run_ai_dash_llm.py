@@ -170,9 +170,11 @@ def parse_args() -> argparse.Namespace:
         "Overridden by the checkpoint's window if present. 1 = snapshot.",
     )
     parser.add_argument(
-        "--policy", choices=["model", "greedy", "pensieve"], default="model",
+        "--policy", choices=["model", "greedy", "pensieve", "mpc", "qmpc"], default="model",
         help="'model' = trained LLM policy; 'greedy' = causal greedy-reward teacher rule (no LLM); "
-             "'pensieve' = Pensieve A3C baseline (network-only).",
+             "'pensieve' = Pensieve A3C baseline (network-only); 'mpc' = RobustMPC on the linear bitrate "
+             "QoE (network-only); 'qmpc' = RobustMPC on the benchmark scoring QoE (content-aware). "
+             "mpc/qmpc/greedy need no --checkpoint and no GPU.",
     )
     parser.add_argument("--w-stall", type=float, default=None,
                         help="Override w_stall for --policy greedy.")
@@ -388,8 +390,10 @@ def main() -> None:
         # just close the handle here so the file ends cleanly on a normal exit.
         try:
             decisions_fh.close()
-            print("[Python] Wrote %d decisions -> %s" % (len(decision_records), decisions_path),
-                  flush=True)
+            # fallback_count = decisions the server declined (FDASH decided instead; rows carry
+            # reason=fallback_*). Printed here so a silently-FDASH cell is visible in the worker log.
+            print("[Python] Wrote %d decisions (%d fallback->FDASH) -> %s" % (
+                len(decision_records), fallback_count, decisions_path), flush=True)
         except Exception as exc:  # pylint: disable=broad-except
             print("[Python] WARN: failed to close decisions log: %s" % exc, flush=True)
         print(

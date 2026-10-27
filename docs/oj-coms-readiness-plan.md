@@ -44,7 +44,7 @@ copy-segmented with a merged 4 s first segment vs the 2 s `original`, offsetting
 semantic frames by one segment. Fix applied: `abr/scripts/realign_original.py` re-splits `original`
 onto the rung timeline (rung media untouched, `*_prealign` archived, argmax-over-offset verified);
 all 32 aligned (abr commit ccdb313). Recompute of frames→VMAF→semantic→metadata for the 32 running as
-`abr/realign_affected.slurm` job 8124852. The stall fix (`extract_true_stall.true_stall_per_ue`) and
+`abr/realign_affected.slurm` job 8124852 (task 1 big_buck_bunny COMPLETED + published: top-rung VMAF median 6.2→95.8, 59/59 monotonic, sizes unchanged) — the 30 unstarted tasks were moved to the `skylake` CPU partition as job 8125596 (`realign_affected_cpu.slurm`, 12 concurrent) because the GPU partition freed only one slot. The stall fix (`extract_true_stall.true_stall_per_ue`) and
 the 2.0 s segment-size fix landed in ns3 commit 49a51c9. Remaining Phase-1 item: validate job
 8124852 output (top-rung VMAF median > 55 on the 32), then proceed to Phase 2.
 

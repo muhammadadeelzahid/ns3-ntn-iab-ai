@@ -45,7 +45,7 @@ semantic frames by one segment. Fix applied: `abr/scripts/realign_original.py` r
 onto the rung timeline (rung media untouched, `*_prealign` archived, argmax-over-offset verified);
 all 32 aligned (abr commit ccdb313). Recompute of frames→VMAF→semantic→metadata for the 32 running as
 `abr/realign_affected.slurm` job 8124852 (task 1 big_buck_bunny COMPLETED + published: top-rung VMAF median 6.2→95.8, 59/59 monotonic, sizes unchanged) — the 30 unstarted tasks were moved to the `skylake` CPU partition as job 8125596 (`realign_affected_cpu.slurm`, 12 concurrent) because the GPU partition freed only one slot. The stall fix (`extract_true_stall.true_stall_per_ue`) and
-the 2.0 s segment-size fix landed in ns3 commit 49a51c9. **PHASE 1 COMPLETE (2026-10-26):** recompute job finished 32/32 (one OOM in `_03` fixed by capping `ProcessPoolExecutor` to SLURM_CPUS_PER_TASK, abr 3422840, task requeued). Final scan: top-rung VMAF median across the 32 videos **9.5 → 94.0**, all 32 monotonic across every rung, all 32 segment sizes byte-identical to `*.prealign.csv` (rung media untouched). Two videos remain <55 (pexels_35124890 48, pexels_6823730 47) — genuinely hard content whose encode PSNR is 30–35 dB; argmax-aligned, not a bug. Viewer bundles + `viewer_bundles.tar` regenerated with corrected VMAF. Next: rebuild ns-3 on the login node for the 2.0 s segment change (49a51c9), then Phase 2.
+the 2.0 s segment-size fix landed in ns3 commit 49a51c9. **PHASE 1 COMPLETE (2026-10-26):** recompute job finished 32/32 (one OOM in `_03` fixed by capping `ProcessPoolExecutor` to SLURM_CPUS_PER_TASK, abr 3422840, task requeued). Final scan: top-rung VMAF median across the 32 videos **9.5 → 94.0**, all 32 monotonic across every rung, all 32 segment sizes byte-identical to `*.prealign.csv` (rung media untouched). Two videos remain <55 (pexels_35124890 48, pexels_6823730 47) — genuinely hard content whose encode PSNR is 30–35 dB; argmax-aligned, not a bug. Viewer bundles + `viewer_bundles.tar` regenerated with corrected VMAF. **Segment size DECISION (2026-10-26): REVERTED to 3.3 s** (ns3 commit after 49a51c9). All traces, teacher labels, checkpoints and benchmarks were produced in a self-consistent 3.3 s world; 2.0 s would need an ns-3 rebuild + full trace re-collection + retrain and invalidate every result. The 3.3 s playout vs 2.0 s encoded bytes = **0.606 × nominal effective per-rung demand, uniform across arms** — a modeling constant to DISCLOSE (Phase 6), not a comparison bias. Source == built binary, so **no rebuild**. Next: Phase 2 (relabel existing 3.3 s traces on corrected VMAF → refit scalers → retrain).
 
 Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
 - **VMAF:** root cause = per-segment temporal offset between encoded and "original" segments (matching
@@ -62,7 +62,7 @@ Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
 ## Phase 2 — Rebuild the pipeline on clean data
 - Recompute `quality_sensitivity` + semantic features (depend on VMAF); refit feature scalers
   (archive old).
-- Re-derive teacher labels (DP/greedy) on corrected VMAF.
+- Re-derive teacher labels (DP/greedy) on corrected VMAF, using the EXISTING 3.3 s traces (they are self-consistent with the 3.3 s player/oracle — no ns-3 trace re-collection, no rebuild).
 - **Keep the held-out split fixed; evaluate on the FULL test set (26 videos), not the shrunk 10.**
   The 10-video shrink was for lgpu wall-time and cherry-picked by corrupt-VMAF headroom — running all
   26 removes that sub-selection bias. Recompute per-video headroom on clean VMAF for binning/reporting
@@ -107,7 +107,8 @@ Branch `feat/mpc-baselines`.
   QARC, Comyco, BOLA — position the content-aware SLM precisely.
 - Add a rigorous **Methodology/reproducibility** section: architecture dims, training budget (LLM and
   each baseline), reward weights, ladder, trace pool, seeds.
-- Add **Limitations & threats to validity** (2.0 s media vs 3.3 s player de-rating; single testbed;
+- **Disclose the player model**: segments carry 2.0 s of encoded bytes but play for 3.3 s, so effective per-rung demand is 0.606 × nominal (uniform across arms); state the ladder in effective terms in Methods.
+- Add **Limitations & threats to validity** (the 0.606× de-rating above; single testbed;
   content effect magnitude; simulation vs real traces).
 - **Graphical abstract**, ORCID, author bios, index terms. Vector figures, colorblind-safe, readable
   at print size.

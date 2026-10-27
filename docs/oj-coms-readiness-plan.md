@@ -71,6 +71,29 @@ Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
   `checkpoints_clean/`. Keep the old checkpoint archived for the record.
 - **Commit:** "feat: rebuild dataset + retrain on corrected VMAF (clean pipeline)".
 
+**PHASE 2 PROGRESS (2026-10-26):** served model = `checkpoints_bola_down/abr_v2_seed4{1,2,3}.pt`
+(trained 2026-07-06 on `train_jsonl_bola_down`: BOLA traces, greedy down-only teacher, window=4,
+soft_tokens=4, missing masks, 50 epochs, ~1h22 on lgpu each). The ns-3 traces are untouched by the
+realign fix (sizes byte-identical), so no re-collection: `scratch/ai_llm/benchmark/rebuild_clean_dataset.py`
+patches `ladder.vmaf` / `semantic_raw` / `model_input.ladder_context` from the corrected metadata CSVs
+(size guard per row) and re-derives greedy labels with the same `greedy_rung` + `oracle_reward.json`
+(semantic weights recomputed per video; `throughput_bps_replay` kept) → `train_jsonl_clean/` (46 441 rows,
+1 800 shards; `rebuild_report.json`). **Regression check: 151/180 videos come out byte-identical** to the
+served dataset — the re-derivation reproduces the pipeline exactly; the 29 realigned videos (20 train /
+5 val / 4 test) changed on 7 167 rows, teacher label flipped on 1 786 (25 % of affected rows; up to 90 %
+on pexels_35282256). Scalers: network refit is identical (observations unchanged → kept
+`feature_scaler_network.json`); semantic refit → `config/feature_scaler_semantic_clean.json`
+(quality_sensitivity mean 21.8→24.8, std 10.8→8.6). **Headroom on clean VMAF**
+(`benchmark/catalog_selection/headroom_clean.csv`, reporting only, split unchanged): every one of the 29
+affected videos jumps from bin 0–2 to bin 3–7 (big_buck_bunny 14.8→89.3, pexels_34797065 7.5→67.4,
+pexels_35132716 25.3→68.5); no unaffected video moved. Consequence for the paper: the old "low-headroom"
+test bucket was almost entirely corrupt-VMAF videos — 3 of the 10 shrunk-matrix videos were affected, and
+the clean 26-video test set holds only ONE genuinely low-headroom video (pexels_28887170, 5.4). The
+earlier "low-headroom collapse" diagnosis must be re-read in that light; Fig-3 needs re-binning on clean
+headroom. Retrain submitted: lgpu jobs **8126266 / 8126267 / 8126268** (abr-clean-s41/42/43, identical
+recipe + budget, `SEMANTIC_SCALER=config/feature_scaler_semantic_clean.json`) → `checkpoints_clean/`.
+Phase-4 serving MUST pass `--semantic-scaler config/feature_scaler_semantic_clean.json`.
+
 ## Phase 3 — Baselines (fair, published)
 Branch `feat/mpc-baselines`.
 - Add **RobustMPC** (Yin, SIGCOMM'15) — the de-facto strong network-only baseline you currently lack.

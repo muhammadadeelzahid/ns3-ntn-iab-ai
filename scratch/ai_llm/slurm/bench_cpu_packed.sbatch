@@ -50,10 +50,11 @@ echo "=== cpu worker: POLICY=$POLICY STEM=$STEM MATRIX=$MATRIX rows [$ROW_START,
 
 sim_stop_for() {  # <metadata csv> -> seconds, or the fixed SIMSTOP
   # auto = EXACTLY the native heuristic worker's rule (dash_trace_worker.slurm): NSEG*4 + 30, floor 90,
-  # cap 600 - so bridge arms and natively-run heuristics stream the same session length per video.
+  # cap SIM_STOP_CAP (default 180 s = the paper cap; ns-3 runs ~1.4 min wall per simulated second, so 600 s
+  # cells do not fit a 12 h job) - natively-run heuristics must use the same SIM_STOP_CAP.
   if [ "$SIMSTOP" = "auto" ]; then
     local nseg; nseg=$(($(wc -l < "$1") - 1))
-    local s=$((nseg * 4 + 30)); [ "$s" -lt 90 ] && s=90; [ "$s" -gt 600 ] && s=600
+    local s=$((nseg * 4 + 30)); [ "$s" -lt 90 ] && s=90; [ "$s" -gt "${SIM_STOP_CAP:-180}" ] && s="${SIM_STOP_CAP:-180}"
     echo "$s"
   else
     echo "$SIMSTOP"

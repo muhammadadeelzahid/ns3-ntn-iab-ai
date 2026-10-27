@@ -35,11 +35,13 @@ namespace ns3
  */
 
 #define MPEG_FRAMES_PER_SEGMENT 100
-// Segment playout duration = MPEG_FRAMES_PER_SEGMENT * MPEG_TIME_BETWEEN_FRAMES.
-// 100 * 20 ms = 2000 ms = 2.0 s, matching the encoded segment duration used by the ABR encoding
-// pipeline (abr: segment_duration_s=2) and the LLM training/oracle. (Was 33 ms => 3.3 s, which
-// over-stated buffer seconds and de-rated per-rung network demand to ~60% of nominal.)
-#define MPEG_TIME_BETWEEN_FRAMES 20
+// Segment playout = MPEG_FRAMES_PER_SEGMENT * MPEG_TIME_BETWEEN_FRAMES = 100 * 33 ms = 3.3 s.
+// NOTE (deliberate, disclosed): the server streams 2.0 s of encoded bytes per segment (abr
+// segment_duration_s=2) but the player plays each segment for 3.3 s, so the effective per-rung
+// network demand is 2.0/3.3 = 0.606 x nominal, uniformly for every ABR arm. Kept at 3.3 s so the
+// collected traces, teacher labels, trained model and benchmark stay self-consistent (and source ==
+// built binary); the paper reports the 0.606 factor instead of re-collecting all data at 2.0 s.
+#define MPEG_TIME_BETWEEN_FRAMES 33
 
 class MPEGHeader : public Header
 {

@@ -16,7 +16,7 @@
     "object_score": 0.2
   },
   "player_model": {
-    "segment_duration_s": 2.0,
+    "segment_duration_s": 3.3,
     "max_buffer_s": 30.0,
     "startup_threshold_s": 10.0,
     "initial_buffer_s": 0.0,

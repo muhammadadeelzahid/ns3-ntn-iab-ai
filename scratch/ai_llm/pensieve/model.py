@@ -38,7 +38,7 @@ BUFFER_NORM = 10.0       # seconds
 THROUGHPUT_NORM = 12.0   # Mbps
 DELAY_NORM = 10.0        # seconds (per-chunk download time)
 SIZE_NORM = 1.0e6        # bytes -> MB
-SEGMENT_DURATION_S = 2.0 # 100 frames @ 20 ms, matches the 2.0s encoded segment duration (abr pipeline)
+SEGMENT_DURATION_S = 3.3 # 100 frames @ 33 ms, matches the dataset/metadata convention
 
 # Feature clips: idle-link throughput measurements can hit hundreds of Mbps (p99 ~335), which
 # saturates the normalized throughput channel and makes the net blind to throughput. Clip the

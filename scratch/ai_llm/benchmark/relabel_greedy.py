@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from ai_llm.metadata_loader import LADDER_LEVELS
 from dp_oracle import load_reward_config  # type: ignore
 
-SEG_DUR = 2.0  # segment duration (s), matches mpeg-header.h (100*20ms) + abr encoded 2.0s
+SEG_DUR = 3.3  # player segment duration (s), matches mpeg-header.h (100*33ms); encoded bytes are 2.0s -> 0.606x effective demand
 
 
 def _ladder(row):

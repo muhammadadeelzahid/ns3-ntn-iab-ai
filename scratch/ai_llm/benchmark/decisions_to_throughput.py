@@ -22,7 +22,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # -> scratch/
 from ai_llm.metadata_loader import load_metadata_index, LADDER_LEVELS
 
-SEG_DUR = 2.0  # segment duration (s), matches mpeg-header.h (100*20ms) + abr encoded 2.0s
+SEG_DUR = 3.3  # player segment duration (s), matches mpeg-header.h (100*33ms); encoded bytes are 2.0s -> 0.606x effective demand
 MIN_FETCH_S = 0.05   # guard against divide-by-zero / buffer-full near-instant fetches
 
 

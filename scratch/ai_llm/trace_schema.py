@@ -19,10 +19,12 @@ LABEL_FIELD_BPS = "chosen_bitrate_bps"
 LABEL_FIELD_CLASS = "chosen_bitrate_class"
 
 # ns-3 MPEG timing model (playback clock), not encoded byte size from metadata.
-# MUST mirror src/dash/model/mpeg-header.h. 100 * 20 ms = 2.0 s = the encoded segment duration
-# (abr pipeline segment_duration_s=2). (Was 33 ms => 3.3 s, mismatching the 2.0 s media.)
+# MUST mirror src/dash/model/mpeg-header.h: 100 * 33 ms = 3.3 s playout per segment. The encoded
+# bytes per segment are 2.0 s of content (abr segment_duration_s=2), so effective per-rung demand is
+# 0.606 x nominal -- deliberate, uniform across arms, disclosed in the paper; kept at 3.3 s for
+# consistency with all collected traces, teacher labels and checkpoints.
 MPEG_FRAMES_PER_SEGMENT = 100
-MPEG_FRAME_DURATION_MS = 20
+MPEG_FRAME_DURATION_MS = 33
 MPEG_SEGMENT_DURATION_S = MPEG_FRAMES_PER_SEGMENT * MPEG_FRAME_DURATION_MS / 1000.0
 
 # throughput_trace.jsonl (scripts/extract_throughput_traces.py) - raw keyed rows before aggregation.

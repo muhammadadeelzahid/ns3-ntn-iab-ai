@@ -191,10 +191,10 @@ AiDashClient::CalcNextSegment(uint32_t currRate, uint32_t& nextRate, Time& delay
   const double throughputStdBps = ComputeThroughputStd();
   const double segmentFetchTimeS = GetSegmentFetchTime();
   const Time now = Simulator::Now();
-  // Segment duration must match the oracle/training value (2.0 s). Derive it from the MPEG frame
+  // Segment duration must match the oracle/training value (3.3 s). Derive it from the MPEG frame
   // constants (same formula as DashClient) so it can never drift from the rest of the pipeline:
-  // 100 frames * 20 ms / 1000 = 2.0 s (matches the abr encoded segment duration). Feeds only
-  // download_time_ratio (a diagnostic, not a model input), so this is a consistency fix.
+  // 100 frames * 33 ms / 1000 = 3.3 s. Feeds only download_time_ratio (a diagnostic, not a model
+  // input), so this is a consistency fix, not a behavior change.
   constexpr double kSegmentDurationS =
       MPEG_FRAMES_PER_SEGMENT * MPEG_TIME_BETWEEN_FRAMES / 1000.0;
   cpp2py->node_id              = GetNode()->GetId();

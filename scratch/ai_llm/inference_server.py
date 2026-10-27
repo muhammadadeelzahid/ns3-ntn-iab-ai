@@ -118,7 +118,7 @@ def parse_args() -> argparse.Namespace:
     # single over-ask that would drain a healthy buffer. Disable with --guard-safety 0.
     ap.add_argument("--guard-safety", type=float, default=0.9,
                     help="Safety factor on the guard's no-stall bitrate budget (0=guard off).")
-    ap.add_argument("--guard-seg-dur-s", type=float, default=2.0,
+    ap.add_argument("--guard-seg-dur-s", type=float, default=3.3,
                     help="Segment duration (s) used in the guard's download-feasibility budget.")
     return ap.parse_args()
 

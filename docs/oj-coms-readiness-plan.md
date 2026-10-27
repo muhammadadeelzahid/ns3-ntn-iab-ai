@@ -105,6 +105,22 @@ Branch `feat/mpc-baselines`.
   quality-MPC. That is the real test — plan the narrative for either outcome.
 - **Commit:** "feat: RobustMPC + quality-aware MPC baselines".
 
+**PHASE 3 PROGRESS (2026-10-27, branch `feat/mpc-baselines`, commits a7b2ee2 / 84b9f5a / 394b6eb):**
+`scratch/ai_llm/mpc_policy.py` implements RobustMPC as published (Yin'15; Pensieve `test/mpc.py`
+reference: K=5 exhaustive, harmonic-mean + max-error discount) with two objectives — `Mpc` = QoE_lin
+(REBUF = R_max = 12, Pensieve's training objective) and `Qmpc` = our scoring QoE (semantic-weighted VMAF,
+down-only switch; vectorised mirror of `dp_oracle` with a 1e-9 parity test; K=1 == `greedy_rung`).
+Served as `--policy mpc|qmpc` (no guard, CPU). **Decisions:** the greedy down-only teacher is the ONLY
+%-reference (Pensieve had been scored against the DP ceiling — fixed in `score_bridge_arm.sh`); the paper
+keeps **four arms: Ours, Quality-MPC, RobustMPC, BOLA** (RAAHS/AAASH/FDASH/Pensieve dropped from tables);
+all arms stream the same session (whole video capped at `SIM_STOP_CAP=180` s — the old arms had 14-segment
+BOLA/RAAHS/AAASH collection runs vs 120/180 s bridge caps). BOLA re-run natively as `Quic_artifacts/BolaFull`
+(launcher 8126857); Qmpc/Mpc 130 cells each on skylake (jobs 8126858-66). Gotcha: run `python3 waf build` on
+the login node before any bridge job (a touched header made waf recompile on compute nodes). Runbook:
+`scratch/ai_llm/benchmark/RUN_BRIDGE_ARMS.md`. Offline eval of the Phase-2 retrain (job 8126535): clean
+seeds val F1 0.77–0.79 (served 0.74–0.79 on clean val rows) but test F1 0.68 vs 0.73–0.75 and replayed test
+QoE 7–8 % worse than the served seeds — inconclusive offline; the live Phase-4 run decides.
+
 ## Phase 4 — Re-run benchmark on the FULL test set + statistical rigor
 - Run the **full 26-video test set × 5 rates = 130 cells per arm** (vs the old 10-video/50-cell shrunk
   benchmark), clean VMAF, retrained LLM, all baselines. This is the headline change: full held-out

@@ -78,7 +78,7 @@ run_cell() {
     "${link[@]}" --decisions-out "$out" \
     > "${LOGDIR}/task_${tid}_${video}_${rtag}_run${seed}.log" 2>&1
   local rc=$?
-  local nfb; nfb=$(grep -c '"reason": *"fallback' "$out" 2>/dev/null || echo 0)
+  local nfb; nfb=$(grep -c '"reason": *"fallback' "$out" 2>/dev/null); nfb=${nfb:-0}   # grep -c exits 1 on 0 matches
   echo "done task $tid ($video $rate run$seed simStop=$stop) rc=$rc fallback_rows=$nfb -> $out"
 }
 

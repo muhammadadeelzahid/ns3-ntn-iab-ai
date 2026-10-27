@@ -45,8 +45,7 @@ semantic frames by one segment. Fix applied: `abr/scripts/realign_original.py` r
 onto the rung timeline (rung media untouched, `*_prealign` archived, argmax-over-offset verified);
 all 32 aligned (abr commit ccdb313). Recompute of frames→VMAF→semantic→metadata for the 32 running as
 `abr/realign_affected.slurm` job 8124852 (task 1 big_buck_bunny COMPLETED + published: top-rung VMAF median 6.2→95.8, 59/59 monotonic, sizes unchanged) — the 30 unstarted tasks were moved to the `skylake` CPU partition as job 8125596 (`realign_affected_cpu.slurm`, 12 concurrent) because the GPU partition freed only one slot. The stall fix (`extract_true_stall.true_stall_per_ue`) and
-the 2.0 s segment-size fix landed in ns3 commit 49a51c9. Remaining Phase-1 item: validate job
-8124852 output (top-rung VMAF median > 55 on the 32), then proceed to Phase 2.
+the 2.0 s segment-size fix landed in ns3 commit 49a51c9. **PHASE 1 COMPLETE (2026-10-26):** recompute job finished 32/32 (one OOM in `_03` fixed by capping `ProcessPoolExecutor` to SLURM_CPUS_PER_TASK, abr 3422840, task requeued). Final scan: top-rung VMAF median across the 32 videos **9.5 → 94.0**, all 32 monotonic across every rung, all 32 segment sizes byte-identical to `*.prealign.csv` (rung media untouched). Two videos remain <55 (pexels_35124890 48, pexels_6823730 47) — genuinely hard content whose encode PSNR is 30–35 dB; argmax-aligned, not a bug. Viewer bundles + `viewer_bundles.tar` regenerated with corrected VMAF. Next: rebuild ns-3 on the login node for the 2.0 s segment change (49a51c9), then Phase 2.
 
 Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
 - **VMAF:** root cause = per-segment temporal offset between encoded and "original" segments (matching

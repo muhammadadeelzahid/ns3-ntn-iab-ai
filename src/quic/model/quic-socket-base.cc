@@ -1374,12 +1374,18 @@ QuicSocketBase::SendDataPacket (SequenceNumber32 packetNumber, uint32_t maxSize,
     }
 
   bool isAckOnly = ((sz == 0) & (withAck));
-
-
+  // Append the ACK frame to a COPY of the packet. `p` is the tx buffer's own sent-list item
+  // (NextSequence returns outItem->m_packet by pointer), so appending in place polluted the stored,
+  // retransmittable payload with the ACK frame: a lost packet was retransmitted WITH its stale ACK
+  // frame and got a fresh one appended again, growing by one ACK frame per loss round while the
+  // buffer's size accounting (m_sentSize / m_appSize) underflowed. Observed in the DASH benchmark as
+  // a 3.9 MB "lost" packet on a client that only ever sends ~20-byte requests: either a permanently
+  // stuck connection (inflight > window) or an uplink storm that froze the simulation.
+  Ptr<Packet> wire = p;
   if (withAck && !m_subflows[pathId]->m_receivedPacketNumbers.empty ())
     {
-      p->AddAtEnd (OnSendingAckFrame (pathId));
-
+      wire = p->Copy ();
+      wire->AddAtEnd (OnSendingAckFrame (pathId));
     }
 
 
@@ -1430,8 +1436,8 @@ QuicSocketBase::SendDataPacket (SequenceNumber32 packetNumber, uint32_t maxSize,
 
   head.SetPathId(pathId);
   // m_subflows[pathId]->Add(packetNumber);
-  m_quicl4->SendPacket (this, p, head);
-  m_txTrace (p, head, this);
+  m_quicl4->SendPacket (this, wire, head);
+  m_txTrace (wire, head, this);
   NotifyDataSent (sz);
 
   m_txBuffer->UpdatePacketSent (packetNumber, sz, pathId, m_subflows[pathId]->m_tcb);

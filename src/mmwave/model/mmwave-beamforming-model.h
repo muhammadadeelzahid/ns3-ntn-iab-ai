@@ -249,6 +249,7 @@ public:
    complexVector_t bfVector2DFFT(uint16_t index, uint16_t antennaNum [2]);
 
 private:
+  Time m_bfCacheExpiry;   //!< lifetime of a cached beamforming design (attribute CacheExpiry)
 
   static constexpr double PI = 3.141592653589793238460;
   void InPlaceArrayFFT (ComplexArray_t& x, bool inv = false);

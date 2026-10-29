@@ -306,6 +306,14 @@ MmWaveFFTCodebookBeamforming::GetTypeId ()
     TypeId ("ns3::MmWaveFFTCodebookBeamforming")
     .SetParent<MmWaveDftBeamforming> ()
     .AddConstructor<MmWaveFFTCodebookBeamforming> ()
+    .AddAttribute ("CacheExpiry",
+                   "Lifetime of a cached beamforming design for a device pair: the FFT-codebook design is "
+                   "recomputed when the cached entry is older than this. 100 us (the historical hard-coded "
+                   "value) recomputes it at every slot; with a static channel (MmWave3gppChannel::UpdatePeriod "
+                   "0) and static UEs a longer lifetime reuses an identical design.",
+                   TimeValue (MicroSeconds (100)),
+                   MakeTimeAccessor (&MmWaveFFTCodebookBeamforming::m_bfCacheExpiry),
+                   MakeTimeChecker ())
   ;
   return tid;
 }
@@ -449,7 +457,7 @@ MmWaveFFTCodebookBeamforming::CheckBfCacheExpiration(Ptr<NetDevice> otherDevice,
   Ptr<CodebookBFVectorCacheEntry> pCacheCasted = DynamicCast<CodebookBFVectorCacheEntry> ( pCacheValue );
   //Ptr<ThreeGppSpectrumPropagationLossModel> casted3GPPchan = DynamicCast<ThreeGppSpectrumPropagationLossModel>( m_3gppChannel );
 
-  return( ( Simulator::Now ().GetNanoSeconds () - pCacheCasted->m_generatedTime.GetNanoSeconds () ) > 100000 );
+  return (Simulator::Now () - pCacheCasted->m_generatedTime > m_bfCacheExpiry);   // attribute CacheExpiry
 
   // if ( casted3GPPchan !=0 )
   //   {

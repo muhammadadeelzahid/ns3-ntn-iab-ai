@@ -6,16 +6,43 @@ Arms (paper_style.ALGOS): **Ours** (`AiDash`, LLM policy), **Quality-MPC** (`Qmp
 (100Gb/s, 36, 18, 9, 4.5 Mbps). The %-of-teacher reference is the greedy down-only causal teacher
 (`config/oracle_reward.json`) for every arm - never the DP oracle.
 
+## Simulation environment (fixed binary, 2026-10-28) - read before submitting anything
+Every arm must run on a binary built from `fix/client-freeze` (merged into `feat/mpc-baselines`) or later:
+- **Two ns-3 QUIC bugs** made 12-16 % of UEs freeze permanently in EVERY arm at EVERY rate on the old
+  binary (commits 13b68f5: ACK frame appended in place to the retransmittable packet; 8babc18: post-RTO
+  "retransmit everything as one packet" loop, >65,507 B silently dropped by UDP). Symptoms: `interruptions`
+  with the video unfinished, sim clock crawling (~1 sim-s per wall-hour), 3.9 MB cwnd. The DASH client
+  also gained a dead-segment reconnect (`[DashClient] node N seg S dead ... -> reconnect #k`, max 8) and a
+  30 s `MaxBufferLevel` (= the scoring player model) as defence in depth (a59f4cd, eaed4b3).
+- Results produced on the old binary (`Quic_artifacts/*_oldenv`, `logs_bench_*_oldenv`,
+  `results/_oldenv_2026-10-27/`: Mpc 130/130 = 89.4 % of teacher, Qmpc 129/130 = 90.9 %, BolaFull 130/130,
+  Ours 41 cells) are kept ONLY as the before/after disclosure. Never mix old-env and new-env cells.
+- **Beamforming cache (`NS3_ATTRS`)**: all three launchers (`bench_cpu_packed.sbatch`,
+  `bench_model_packed.sbatch`, `dash_trace_worker.slurm`) default to
+  `NS3_ATTRS=ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s`, forwarded as `--ns3-attr` to
+  `run_ai_dash_llm.py` (bridge) or `--ns3::...` to the binary (native). The scenario's UEs/IAB nodes are
+  static and the 28 GHz channel has `UpdatePeriod` 0, so the FFT-codebook beam design is identical every
+  slot; the A/B on a full 90 s cell was byte-identical (decisions, frame trace, session stats) and 8.5x
+  faster (~12 s instead of ~100 s wall per simulated second). Disclose it as a simulation setting.
+  `NS3_ATTRS=""` restores the per-slot design; with mobility or a channel update period the expiry must not
+  exceed that period (20 ms SSB beam-management period). The worker banner prints `ns3_attrs=`.
+- **Freeze gate after every arm**: `python3.11 scratch/ai_llm/benchmark/freeze_audit.py 'logs_bench_<stem>/task_*.log'`
+  (native BOLA: `'Quic_artifacts/BolaFull/*/run_*/sim.log'`) must report 0 permanently frozen UEs; a handful
+  of reconnects per cell is normal. The validation of the fixed binary on the six worst old-freeze cells is
+  `Quic_artifacts/freeze_smoke.csv` -> `Qmpc_fixsmoke` (job 8134633; `Qmpc_fixsmoke_v2` = first QUIC fix only).
+
 ## Bridge arms (Python inference server): Qmpc, Mpc (CPU) and AiDash (GPU)
 ```
-# RobustMPC / Quality-MPC: torch-free, skylake, 130 cells in 4 row slices x KPAR=20 (fits 12 h)
-for pol in qmpc mpc; do for s in "1 33" "34 66" "67 99" "100 130"; do set -- $s
+# RobustMPC / Quality-MPC: torch-free, skylake, KPAR=20. With the beam cache a 180 s cell is ~35-40 min wall,
+# so 2 row slices of 65 (~3-4 h each) replace the old 4 slices; existing non-empty cells are skipped on resubmit.
+for pol in qmpc mpc; do for s in "1 65" "66 130"; do set -- $s
   MATRIX=Quic_artifacts/model_matrix_1run.csv POLICY=$pol KPAR=20 ROW_START=$1 ROW_END=$2 \
     sbatch --job-name=bench-$pol-$1 scratch/ai_llm/slurm/bench_cpu_packed.sbatch; done; done
 # Ours (Phase 4): lgpu packed worker, clean checkpoint + ITS scaler, SIMSTOP=auto (default) = same session
-# rule. ~4-5 h wall per 180 s cell with 6 servers sharing one L40s (KPAR=6 is the OOM-safe cap), so a 12 h
-# job finishes ~12 cells: submit 12-row slices (11 jobs); existing non-empty cells are skipped on resubmit.
-for s in "1 12" "13 24" "25 36" "37 48" "49 60" "61 72" "73 84" "85 96" "97 108" "109 120" "121 130"; do set -- $s
+# rule. The old binary needed ~4-5 h wall per 180 s cell (ns-3 CPU-bound, not the GPU); with the beam cache
+# ~40 min, so 3 slices of ~44 rows at KPAR=6 (the OOM-safe cap for 6 servers on one L40s) fit 12 h jobs.
+# Existing non-empty cells are skipped on resubmit.
+for s in "1 44" "45 88" "89 130"; do set -- $s
   MATRIX=Quic_artifacts/model_matrix_1run.csv CKPT=scratch/ai_llm/checkpoints_clean/abr_v2_seed42.pt \
     SEMANTIC_SCALER=scratch/ai_llm/config/feature_scaler_semantic_clean.json \
     OUT_ROOT=Quic_artifacts/AiDashClean LOGDIR=logs_bench_aidashclean KPAR=6 ROW_START=$1 ROW_END=$2 \

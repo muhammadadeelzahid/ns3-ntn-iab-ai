@@ -142,6 +142,26 @@ tables/figures read it with `MODEL_STEM=AiDashClean` (`benchmark/model_arm.py`),
 `AiDash/bench_down_scored` layout stays the default until Phase 4 is scored. Seeds 41/43 and CIs follow once
 the seed-42 pass and the three CPU arms are in.
 
+**PHASE 4 ENVIRONMENT FIX (2026-10-27/28, branch `fix/client-freeze`, merged into `feat/mpc-baselines`):**
+the first full-matrix pass exposed a simulator artifact: 12-16 % of UEs froze permanently (video unfinished,
+`interruptions` growing) in EVERY arm at EVERY rate (Qmpc 14.5 %, Mpc 12.2 %, Ours 16 %, BOLA 13.3 %), with
+some cells' simulation clock crawling at ~1 sim-s per wall-hour. Root cause = two bugs in the ns-3 QUIC
+module, found by core-dumping frozen cells: (i) the ACK frame was appended in place to the tx buffer's
+retransmittable packet, so retransmissions grew by one ACK frame per loss round (3.9 MB packets/cwnd),
+commit 13b68f5; (ii) after one RTO every later ACK re-marked all unacked packets lost and they were
+retransmitted as ONE packet whose size exceeded the UDP limit and was silently dropped, forever, commit
+8babc18. Defence in depth in the DASH client: dead-segment reconnect + 30 s playout-buffer cap (= the scoring
+player model), a59f4cd/eaed4b3. The fixed binary was validated on the six worst old-freeze cells
+(`Quic_artifacts/freeze_smoke.csv`, job 8134633): 0 frozen UEs, every reconnect succeeded, no crawl.
+Speed: the healthy-phase CPU cost was the mmWave FFT-codebook beam design redone every slot although the
+scenario is static (UEs/IAB fixed, channel `UpdatePeriod` 0); it is now cached for the session through
+`ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s` (attribute added in 0805258, forwarded by every
+launcher via `NS3_ATTRS`, 4c040cf), verified byte-identical on a full cell and 8.5x faster. **Consequence:
+every arm is re-run on the fixed binary**; the old-binary results are archived as `*_oldenv` and reported
+only as the before/after disclosure (old Mpc 89.4 % / Qmpc 90.9 % of teacher, freeze 12-16 %). The
+manuscript must state the QUIC fixes, the beam-cache setting and the 30 s buffer cap as simulation settings.
+Runbook: `scratch/ai_llm/benchmark/RUN_BRIDGE_ARMS.md` ("Simulation environment").
+
 ## Phase 5 — Content-vs-network ablation
 - With VMAF fixed, run the ablation a journal will expect: network-only vs content+network variant of
   *our* policy, on the clean metric, to quantify the content contribution directly (the thing the

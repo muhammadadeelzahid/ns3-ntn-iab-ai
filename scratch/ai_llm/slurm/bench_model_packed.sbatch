@@ -43,6 +43,14 @@ SEMANTIC_SCALER="${SEMANTIC_SCALER:-}"
 SERVER_PY="${SERVER_PY:-$HOME/abr-llm-venv/bin/python}"
 NUMUES="${NUMUES:-3}"
 SIMSTOP="${SIMSTOP:-auto}"                                # auto = NSEG*4+30 clamped [90, SIM_STOP_CAP=180]
+# ns-3 attribute defaults, space-separated ns3::Type::Attr=value, passed as run_ai_dash_llm.py --ns3-attr
+# (the scenario's CommandLine applies them before the helpers are built). Default = hold the FFT-codebook
+# beamforming cache for the whole session: the benchmark scenario has static UEs/IAB and a static 28 GHz
+# channel (UpdatePeriod 0), so the per-slot beam design is identical every slot; verified byte-identical
+# against the 100 us default on a full 90 s cell (decisions, 1800 frame lines, session stats) and ~8.5x
+# faster wall (A/B 2026-10-28). NS3_ATTRS="" disables; with mobility or a channel UpdatePeriod > 0 the
+# expiry must not exceed that period.
+NS3_ATTRS="${NS3_ATTRS-ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s}"
 OUT_ROOT="${OUT_ROOT:-Quic_artifacts/AiDash/bench}"
 # Additive knobs (defaults preserve the LLM model arm exactly). The Pensieve baseline overrides
 # POLICY=pensieve, DEVICE=cpu (tiny net), CKPT=checkpoints_pensieve/..., OUT_ROOT=Quic_artifacts/Pensieve.
@@ -51,7 +59,7 @@ DEVICE="${DEVICE:-cuda}"
 LOGDIR="${LOGDIR:-logs_bench}"
 mkdir -p "$LOGDIR"
 
-echo "=== packed worker: MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR ckpt=$CKPT numUes=$NUMUES simStop=$SIMSTOP cap=${SIM_STOP_CAP:-180} out=$OUT_ROOT logs=$LOGDIR sem_scaler=${SEMANTIC_SCALER:-default} ==="
+echo "=== packed worker: MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR ckpt=$CKPT numUes=$NUMUES simStop=$SIMSTOP cap=${SIM_STOP_CAP:-180} out=$OUT_ROOT logs=$LOGDIR sem_scaler=${SEMANTIC_SCALER:-default} ns3_attrs=${NS3_ATTRS:-none} ==="
 
 sim_stop_for() {  # <metadata csv> -> seconds (identical to bench_cpu_packed.sbatch / dash_trace_worker.slurm)
   if [ "$SIMSTOP" = "auto" ]; then
@@ -70,6 +78,7 @@ run_cell() {
   [ -s "$out" ] && { echo "SKIP task $tid ($video $rate run$seed): decisions.jsonl exists"; return 0; }
   mkdir -p "$(dirname "$out")"
   local link=(); [ "$rate" != "100Gb/s" ] && link=(--link-rate "$rate")
+  local attrs=(); local a; for a in ${NS3_ATTRS}; do attrs+=(--ns3-attr "$a"); done
   local stop; stop=$(sim_stop_for "$meta")
   /usr/bin/python3 scratch/run_ai_dash_llm.py \
     --checkpoint "$CKPT" --metadata "$meta" \
@@ -79,7 +88,7 @@ run_cell() {
     ${NETWORK_SCALER:+--network-scaler "$NETWORK_SCALER"} \
     ${SEMANTIC_SCALER:+--semantic-scaler "$SEMANTIC_SCALER"} \
     --shm-id "pack_${SLURM_JOB_ID}_${tid}" \
-    "${link[@]}" --decisions-out "$out" \
+    "${link[@]}" "${attrs[@]}" --decisions-out "$out" \
     > "${LOGDIR}/task_${tid}_${video}_${rtag}_run${seed}.log" 2>&1
   local rc=$?
   local nfb; nfb=$(grep -c '"reason": *"fallback' "$out" 2>/dev/null); nfb=${nfb:-0}   # grep -c exits 1 on 0 matches

@@ -197,6 +197,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--numUes", default="1", help="Number of UEs to simulate.")
     parser.add_argument("--run", default="1", help="RNG run index.")
     parser.add_argument(
+        "--ns3-attr", action="append", default=[], metavar="ns3::Type::Attr=value",
+        help="Set an ns-3 attribute default for this run through the scenario's CommandLine "
+             "(repeatable), e.g. ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s.")
+    parser.add_argument(
         "--sim-stop-time", default=None,
         help="Override the ns-3 simStopTime (seconds). Default: scenario default (90). "
         "Use a small value for a quick smoke.",
@@ -288,6 +292,11 @@ def main() -> None:
         setting["simStopTime"] = str(args.sim_stop_time)
     if args.link_rate is not None:
         setting["linkRate"] = str(args.link_rate)
+    for kv in args.ns3_attr:  # --ns3::Type::Attr=value is handled by ns-3's CommandLine (Config::SetDefault)
+        key, _, value = kv.partition("=")
+        if not key.startswith("ns3::") or not value:
+            raise SystemExit("--ns3-attr expects ns3::Type::Attribute=value, got %r" % kv)
+        setting[key] = value
     setting["shmPrefix"] = shm_prefix  # ns-3 side rebuilds the matching shm names from this
     msg = exp.run(setting=setting, show_output=True)
 

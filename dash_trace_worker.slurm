@@ -108,6 +108,14 @@ fi
 if [[ "${MAX_VIDEO_DURATION:-0}" != "0" ]]; then
   SIM_ARGS+=(--maxVideoDuration="${MAX_VIDEO_DURATION}")
 fi
+# ns-3 attribute defaults (space-separated ns3::Type::Attr=value, handled by the scenario CommandLine).
+# Default = hold the FFT-codebook beamforming cache for the whole session, the same setting the bridge
+# launchers (scratch/ai_llm/slurm/bench_*_packed.sbatch) use and the rationale documented there: static
+# UEs + static channel -> identical beam design every slot; byte-identical output, ~8.5x faster.
+# NS3_ATTRS="" disables (export it before sbatch; the launcher passes --export=ALL).
+NS3_ATTRS="${NS3_ATTRS-ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s}"
+for _attr in ${NS3_ATTRS}; do SIM_ARGS+=("--${_attr}"); done
+echo "ns3 attribute defaults: ${NS3_ATTRS:-none}"
 
 "${SIM_BIN}" "${SIM_ARGS[@]}" 2>&1 | tee sim.log
 

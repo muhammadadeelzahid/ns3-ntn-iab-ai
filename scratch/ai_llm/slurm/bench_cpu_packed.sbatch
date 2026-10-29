@@ -42,11 +42,19 @@ CKPT="${CKPT:-checkpoints_pensieve/pensieve_actor.pt}"    # pensieve only
 SERVER_PY="${SERVER_PY:-$HOME/abr-llm-venv/bin/python}"
 NUMUES="${NUMUES:-3}"                                     # match the model arm
 SIMSTOP="${SIMSTOP:-auto}"                                # auto = NSEG*3.3+30 per video (whole video)
+# ns-3 attribute defaults, space-separated ns3::Type::Attr=value, passed as run_ai_dash_llm.py --ns3-attr
+# (the scenario's CommandLine applies them before the helpers are built). Default = hold the FFT-codebook
+# beamforming cache for the whole session: the benchmark scenario has static UEs/IAB and a static 28 GHz
+# channel (UpdatePeriod 0), so the per-slot beam design is identical every slot; verified byte-identical
+# against the 100 us default on a full 90 s cell (decisions, 1800 frame lines, session stats) and ~8.5x
+# faster wall (A/B 2026-10-28). NS3_ATTRS="" disables; with mobility or a channel UpdatePeriod > 0 the
+# expiry must not exceed that period.
+NS3_ATTRS="${NS3_ATTRS-ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s}"
 OUT_ROOT="${OUT_ROOT:-Quic_artifacts/${STEM}}"
 LOGDIR="${LOGDIR:-logs_bench_$(echo "$STEM" | tr '[:upper:]' '[:lower:]')}"
 mkdir -p "$LOGDIR"
 
-echo "=== cpu worker: POLICY=$POLICY STEM=$STEM MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR numUes=$NUMUES simStop=$SIMSTOP out=$OUT_ROOT logs=$LOGDIR ==="
+echo "=== cpu worker: POLICY=$POLICY STEM=$STEM MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR numUes=$NUMUES simStop=$SIMSTOP out=$OUT_ROOT logs=$LOGDIR ns3_attrs=${NS3_ATTRS:-none} ==="
 
 sim_stop_for() {  # <metadata csv> -> seconds, or the fixed SIMSTOP
   # auto = EXACTLY the native heuristic worker's rule (dash_trace_worker.slurm): NSEG*4 + 30, floor 90,
@@ -69,13 +77,14 @@ run_cell() {
   mkdir -p "$(dirname "$out")"
   local link=(); [ "$rate" != "100Gb/s" ] && link=(--link-rate "$rate")
   local ckpt=(); [ "$POLICY" = "pensieve" ] && ckpt=(--checkpoint "$CKPT")
+  local attrs=(); local a; for a in ${NS3_ATTRS}; do attrs+=(--ns3-attr "$a"); done
   local stop; stop=$(sim_stop_for "$meta")
   /usr/bin/python3 scratch/run_ai_dash_llm.py \
     --policy "$POLICY" "${ckpt[@]}" --metadata "$meta" \
     --numUes "$NUMUES" --run "$seed" --sim-stop-time "$stop" \
     --server-python "$SERVER_PY" --device cpu \
     --shm-id "${POLICY:0:4}_${SLURM_JOB_ID}_${tid}" \
-    "${link[@]}" --decisions-out "$out" \
+    "${link[@]}" "${attrs[@]}" --decisions-out "$out" \
     > "${LOGDIR}/task_${tid}_${video}_${rtag}_run${seed}.log" 2>&1
   local rc=$?
   local nfb; nfb=$(grep -c '"reason": *"fallback' "$out" 2>/dev/null); nfb=${nfb:-0}   # grep -c exits 1 on 0 matches

@@ -277,6 +277,15 @@ public:
   void ResetSentList (uint8_t pathId, uint32_t keepItems = 1);
 
   /**
+   * \brief RTO verification: mark every unacknowledged packet sent before the RTO as lost
+   *
+   * \param pathId the path
+   * \param largestSentBeforeRto the largest packet number sent before the RTO fired
+   * \return the number of packets newly marked lost
+   */
+  uint32_t MarkLostUpTo (uint8_t pathId, SequenceNumber32 largestSentBeforeRto);
+
+  /**
    * Mark a packet as lost
    * \param the sequence number of the packet
    * \return true if the packet is in the send buffer

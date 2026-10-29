@@ -1150,8 +1150,14 @@ QuicSocketBase::SendPendingData (bool withAck)
                                     << " MaxPacketSize " << GetSegSize ());
 
         NS_LOG_INFO ("on path " << sendingPathId << " SN " << next);
-        // uint32_t sz =
-        SendDataPacket (next, s, withAck, sendingPathId);
+        uint32_t sz = SendDataPacket (next, s, withAck, sendingPathId);
+        if (sz == 0 || sz == static_cast<uint32_t> (-1))
+          {
+            // Nothing could be sent (no frame fits the window, socket draining/closed): stop instead of
+            // spinning. With m_closeOnEmpty the silly-window guard above is skipped and the old loop came
+            // straight back through a zero-length pacing timer at the same timestamp (frozen clock).
+            break;
+          }
 
         win = AvailableWindow (sendingPathId);
         connWin = ConnectionWindow (sendingPathId);
@@ -1360,7 +1366,7 @@ QuicSocketBase::SendDataPacket (SequenceNumber32 packetNumber, uint32_t maxSize,
   if (m_subflows[pathId]->m_tcb->m_pacing)
     {
       NS_LOG_DEBUG ("Pacing is enabled");
-      if (m_pacingTimer.IsExpired ())
+      if (m_pacingTimer.IsExpired () && sz > 0)   // sz == 0: nothing on the wire, no zero-delay re-entry
         {
           NS_LOG_DEBUG ("Current Pacing Rate " << m_subflows[pathId]->m_tcb->m_pacingRate);
           NS_LOG_DEBUG ("Pacing Timer is in expired state, activate it. Expires in " <<
@@ -1522,6 +1528,9 @@ QuicSocketBase::SetReTxTimeout (uint8_t pathId)
     }
   NS_LOG_INFO ("Schedule ReTxTimeout at time " << Simulator::Now ().GetSeconds () << " to expire at time " << (Simulator::Now () + alarmDuration).GetSeconds ());
   NS_LOG_INFO ("Alarm after " << alarmDuration.GetSeconds () << " seconds");
+  // Re-arming replaces the pending alarm. The old code left every previous alarm scheduled; one firing after
+  // the current trigger time ran ReTxTimeout spuriously (extra TLP/RTO probes) and they piled up per packet.
+  m_subflows[pathId]->m_tcb->m_lossDetectionAlarm.Cancel ();
   // pass pathId to &QuicSocketBase::ReTxTimeout
   m_subflows[pathId]->m_tcb->m_lossDetectionAlarm = Simulator::Schedule (alarmDuration, &QuicSocketBase::ReTxTimeout, this, pathId);
   m_subflows[pathId]->m_tcb->m_nextAlarmTrigger = Simulator::Now () + alarmDuration;
@@ -1555,9 +1564,18 @@ QuicSocketBase::DoRetransmit (std::vector<Ptr<QuicSocketTxItem> > lostPackets, u
                        pathId);
   }
 
-  // Send the retransmitted data
+  // Send the retransmitted data: at most ONE MTU-sized packet here. Retransmission () re-queued every lost
+  // item at the head of the scheduler; the old call passed the TOTAL lost size as the packet size, so a loss
+  // burst came back as a single QUIC packet (3.9 MB in the DASH benchmark core dump). Anything above 65,507 B
+  // is rejected by the UDP socket (QuicL4Protocol ignores the return value), was never acknowledged and was
+  // resent on every ACK. The remaining re-queued data leaves through SendPendingData under the usual
+  // window/pacing rules.
   NS_LOG_INFO ("Retransmitted packet, next sequence number " << m_subflows[pathId]->m_tcb->m_nextTxSequence);
-  SendDataPacket (next, toRetx, m_connected,pathId);
+  SendDataPacket (next, std::min (toRetx, GetSegSize ()), m_connected, pathId);
+  if (m_txBuffer->AppSize () > 0)
+    {
+      SendPendingData (m_connected);
+    }
 }
 
 void
@@ -2435,10 +2453,14 @@ QuicSocketBase::OnReceivedAckFrame (QuicSubheader &sub)
       if (m_subflows[pathId]->m_tcb->m_largestSentBeforeRto.GetValue () < largestAcknowledged)
         {
 
-          uint32_t newPackets = (largestAcknowledged
-                                 - m_subflows[pathId]->m_tcb->m_largestSentBeforeRto.GetValue ()) / GetSegSize ();
+          // The RTO is verified: every packet sent before it is lost (draft-ietf-quic-recovery
+          // OnRetransmissionTimeoutVerified). The old code derived the number of post-RTO packets to KEEP as a
+          // packet-number difference divided by the segment size in BYTES (0 unless >1500 packets apart) and
+          // never cleared m_rtoCount on this path, so every later ACK marked every unacknowledged packet lost
+          // again - including the ones sent microseconds earlier - and resent all of them: the endless
+          // retransmit-everything loop behind the DASH benchmark "storm". Mark the pre-RTO packets, once.
           uint32_t inFlightBeforeRto = m_txBuffer->BytesInFlight (pathId);
-          m_txBuffer->ResetSentList (pathId, newPackets);
+          m_txBuffer->MarkLostUpTo (pathId, m_subflows[pathId]->m_tcb->m_largestSentBeforeRto);
           std::vector<Ptr<QuicSocketTxItem> > lostPackets =
             m_txBuffer->DetectLostPackets (pathId);
           if (m_quicCongestionControlLegacy && !lostPackets.empty ())
@@ -2452,11 +2474,16 @@ QuicSocketBase::OnReceivedAckFrame (QuicSubheader &sub)
               m_congestionControl->CongestionStateSet (
                 m_subflows[pathId]->m_tcb, TcpSocketState::CA_LOSS);
             }
+          else if (!m_quicCongestionControlLegacy)
+            {
+              // Same as QuicCongestionOps/QuicBbr::OnRetransmissionTimeoutVerified (protected): loss state.
+              m_subflows[pathId]->m_tcb->m_cWnd = m_subflows[pathId]->m_tcb->m_kMinimumWindow;
+              m_subflows[pathId]->m_tcb->m_congState = TcpSocketState::CA_LOSS;
+              m_congestionControl->CongestionStateSet (m_subflows[pathId]->m_tcb, TcpSocketState::CA_LOSS);
+            }
         }
-      else
-        {
-          m_subflows[pathId]->m_tcb->m_rtoCount = 0;
-        }
+      // Any ACK ends the RTO episode (draft-ietf-quic-recovery OnAckReceived: rto_count = 0 unconditionally).
+      m_subflows[pathId]->m_tcb->m_rtoCount = 0;
     }
 
   // Tail loss probe packet acknowledged - IETF Draft QUIC Recovery, Sec. 4.3.2

@@ -33,9 +33,12 @@ Every arm must run on a binary built from `fix/client-freeze` (merged into `feat
 
 ## Bridge arms (Python inference server): Qmpc, Mpc (CPU) and AiDash (GPU)
 ```
-# RobustMPC / Quality-MPC: torch-free, skylake, KPAR=20. With the beam cache a 180 s cell is ~35-40 min wall,
-# so 2 row slices of 65 (~3-4 h each) replace the old 4 slices; existing non-empty cells are skipped on resubmit.
-for pol in qmpc mpc; do for s in "1 65" "66 130"; do set -- $s
+# RobustMPC / Quality-MPC: torch-free, skylake, KPAR=20. Measured on the fixed binary WITH the beam cache:
+# 20 cells on one 40-core node run at ~75 s wall per simulated second (CPU contention; a lone cell is ~12 s),
+# so a 180 s cell takes ~3.8 h and a 12 h job holds ~3 waves = 4 slices of ~33 rows. Existing non-empty cells
+# are skipped on resubmit, BUT decisions.jsonl is streamed: after a timeout, delete the cells that have no
+# "done task" line in the slurm output before resubmitting, or the partial cells are silently skipped.
+for pol in qmpc mpc; do for s in "1 33" "34 66" "67 99" "100 130"; do set -- $s
   MATRIX=Quic_artifacts/model_matrix_1run.csv POLICY=$pol KPAR=20 ROW_START=$1 ROW_END=$2 \
     sbatch --job-name=bench-$pol-$1 scratch/ai_llm/slurm/bench_cpu_packed.sbatch; done; done
 # Ours (Phase 4): lgpu packed worker, clean checkpoint + ITS scaler, SIMSTOP=auto (default) = same session

@@ -224,6 +224,7 @@ class DashClient : public Application
 
     EventId m_keepAliveTimer;
     EventId m_connectWatchdogTimer;
+    uint32_t m_connectAttempt = 0; // consecutive watchdog retries of the current connect (backoff exponent)
     EventId m_segmentWatchdogTimer;
     EventId m_periodicBufferCheckTimer; // Timer for periodic buffer check when player is paused
     Time m_maxVideoDuration;  // Maximum video duration - stops requesting segments after this time

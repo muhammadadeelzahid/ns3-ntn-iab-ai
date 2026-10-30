@@ -30,6 +30,7 @@
 #include <ns3/tcp-socket-factory.h>
 #include <ns3/uinteger.h>
 #include <sstream>
+#include <algorithm>
 
 NS_LOG_COMPONENT_DEFINE("DashClient");
 
@@ -272,7 +273,10 @@ DashClient::StartApplication(void) // Called at time specified by Start
                                     MakeCallback(&DashClient::ConnectionErrorClosed, this));
         m_socket->Connect(m_peer);
         m_connectWatchdogTimer.Cancel();
-        m_connectWatchdogTimer = Simulator::Schedule(MilliSeconds(200),
+        // Exponential backoff (200 ms doubling, cap 6.4 s), reset on success - as QUIC's own handshake
+        // timer does. A fixed 200 ms abandoned every handshake whose RTT exceeded it (deep downlink queue),
+        // which livelocked once late handshakes of abandoned sockets were (correctly) ignored.
+        m_connectWatchdogTimer = Simulator::Schedule(MilliSeconds(200u << std::min<uint32_t>(m_connectAttempt, 5u)),
                                                      &DashClient::ConnectWatchdog,
                                                      this);
 
@@ -617,6 +621,7 @@ DashClient::ConnectionSucceeded(Ptr<Socket> socket)
     NS_LOG_UNCOND("DashClient " << m_id << " (VideoId=" << m_videoId << ") - Connection SUCCEEDED at time " << Simulator::Now().GetSeconds() << "s");
     m_connected = true;
     m_connectWatchdogTimer.Cancel();
+    m_connectAttempt = 0;
     m_lastCompletedSegmentId = -1;
     m_socketTraceConnected = false;
     m_lossEventsSinceLastDecision = 0;
@@ -682,6 +687,7 @@ DashClient::ConnectWatchdog()
                    << Simulator::Now().GetSeconds()
                    << "s, retrying connection setup");
 
+    m_connectAttempt++;
     Ptr<Socket> oldSocket = m_socket;
     m_socket = 0;
     m_connected = false;

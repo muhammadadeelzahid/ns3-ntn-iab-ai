@@ -608,6 +608,12 @@ void
 DashClient::ConnectionSucceeded(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);
+    if (socket != m_socket)
+    {
+        // A socket abandoned by the connect watchdog finished its handshake late (before the 1 ms
+        // StartApplication of its replacement): using it would dereference m_socket == 0.
+        return;
+    }
     NS_LOG_UNCOND("DashClient " << m_id << " (VideoId=" << m_videoId << ") - Connection SUCCEEDED at time " << Simulator::Now().GetSeconds() << "s");
     m_connected = true;
     m_connectWatchdogTimer.Cancel();
@@ -679,6 +685,12 @@ DashClient::ConnectWatchdog()
     Ptr<Socket> oldSocket = m_socket;
     m_socket = 0;
     m_connected = false;
+    // Detach first (as RecoverDeadSegment does): a late handshake/close of the abandoned socket must not
+    // call back into this client.
+    oldSocket->SetRecvCallback(MakeNullCallback<void, Ptr<Socket>>());
+    oldSocket->SetConnectCallback(MakeNullCallback<void, Ptr<Socket>>(), MakeNullCallback<void, Ptr<Socket>>());
+    oldSocket->SetSendCallback(MakeNullCallback<void, Ptr<Socket>, uint32_t>());
+    oldSocket->SetCloseCallbacks(MakeNullCallback<void, Ptr<Socket>>(), MakeNullCallback<void, Ptr<Socket>>());
     oldSocket->Close();
     m_segmentWatchdogTimer.Cancel();
     m_RequestPending = false;

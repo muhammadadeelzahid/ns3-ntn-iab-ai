@@ -1026,6 +1026,11 @@ QuicSocketBase::SendPendingData (bool withAck)
 {
   NS_LOG_FUNCTION (this << withAck);
 
+  if (m_immediateClose)
+    {
+      return false;
+    }
+
   if (m_txBuffer->AppSize () == 0)
     {
       if (m_closeOnEmpty)
@@ -1276,6 +1281,10 @@ void
 QuicSocketBase::SendAck (uint8_t pathId)
 {
   NS_LOG_FUNCTION (this);
+  if (m_immediateClose)
+    {
+      return;
+    }
   m_subflows[pathId]->m_delAckEvent.Cancel ();
   m_subflows[pathId]->m_sendAckEvent.Cancel ();
   m_subflows[pathId]->m_queue_ack = false;
@@ -1540,6 +1549,10 @@ void
 QuicSocketBase::DoRetransmit (std::vector<Ptr<QuicSocketTxItem> > lostPackets, uint8_t pathId)
 {
   NS_LOG_FUNCTION (this);
+  if (m_immediateClose)
+    {
+      return;
+    }
   
   // Get packets to retransmit
   SequenceNumber32 next = ++m_subflows[pathId]->m_tcb->m_nextTxSequence;
@@ -1581,6 +1594,10 @@ QuicSocketBase::DoRetransmit (std::vector<Ptr<QuicSocketTxItem> > lostPackets, u
 void
 QuicSocketBase::ReTxTimeout (uint8_t pathId)
 {
+  if (m_immediateClose)
+    {
+      return;
+    }
   if (Simulator::Now () < m_subflows[pathId]->m_tcb->m_nextAlarmTrigger)
     {
       NS_LOG_INFO ("Canceled alarm");
@@ -1774,6 +1791,44 @@ QuicSocketBase::RecvFrom (uint32_t maxSize, uint32_t flags, Address &fromAddress
 }
 
 void
+QuicSocketBase::ImmediateClose (bool sendClose)
+{
+  NS_LOG_FUNCTION (this << sendClose);
+  m_immediateClose = true;
+  m_closeOnEmpty = false;
+  m_appCloseSentListNoEmpty = false;
+  m_sendPendingDataEvent.Cancel ();
+  m_retxEvent.Cancel ();
+  m_idleTimeoutEvent.Cancel ();
+  m_sendAckEvent.Cancel ();
+  m_delAckEvent.Cancel ();
+  m_pacingTimer.Cancel ();
+  for (auto &sf : m_subflows)
+    {
+      if (!sf)
+        {
+          continue;
+        }
+      sf->m_sendPendingDataEvent.Cancel ();
+      sf->m_retxEvent.Cancel ();
+      sf->m_idleTimeoutEvent.Cancel ();
+      sf->m_sendAckEvent.Cancel ();
+      sf->m_delAckEvent.Cancel ();
+      if (sf->m_tcb)
+        {
+          sf->m_tcb->m_lossDetectionAlarm.Cancel ();
+        }
+    }
+  SetState (CLOSING);
+  m_drainingPeriodEvent.Cancel ();
+  m_drainingPeriodEvent = Simulator::Schedule (m_drainingPeriodTimeout, &QuicSocketBase::DoClose, this);
+  if (sendClose && !m_subflows.empty () && m_subflows[0])
+    {
+      SendConnectionClosePacket (0, "Immediate close");
+    }
+}
+
+void
 QuicSocketBase::ScheduleCloseAndSendConnectionClosePacket ()
 {
   m_drainingPeriodEvent.Cancel ();
@@ -1792,36 +1847,20 @@ QuicSocketBase::Close (void)
   // std::cout << this << " Close at time " << Simulator::Now ().GetSeconds ()<<std::endl;
   m_receivedTransportParameters = false;
 
+  // The applications in this repository call Close() only to ABANDON a connection (DashClient dead-segment
+  // recovery / connect watchdog) or at StopApplication. The original graceful path kept transmitting the
+  // whole tx buffer (FlushOnClose) or did nothing at all while the sent list was non-empty, so every
+  // abandoned DASH connection stayed a full-rate zombie flow on the bottleneck and the server kept sending
+  // the abandoned segment. Close is therefore an RFC 9000 immediate close.
   if (m_idleTimeoutEvent.IsRunning () and m_socketState != IDLE
-      and m_socketState != CLOSING)   //Connection Close from application signal
+      and m_socketState != CLOSING and m_socketState != LISTENING)   //Connection Close from application signal
     {
-      bool sentListEmpty = m_txBuffer->SentListIsEmpty();
-      
-      if(!sentListEmpty) {
-        m_appCloseSentListNoEmpty = true;
-      } else {
-        m_appCloseSentListNoEmpty = false;
-        SetState (CLOSING);
-        if (m_flushOnClose)
-          {
-            m_closeOnEmpty = true;
-          }
-        else
-          {
-            ScheduleCloseAndSendConnectionClosePacket ();
-          }
-      } 
+      ImmediateClose (m_socketState == OPEN);
     }
   else if (m_idleTimeoutEvent.IsExpired () and m_socketState != CLOSING
-           and m_socketState != IDLE and m_socketState != LISTENING) //Connection Close due to Idle Period termination
+           and m_socketState != IDLE and m_socketState != LISTENING) //Idle timeout, or app close before the handshake
     {
-      SetState (CLOSING);
-      m_drainingPeriodEvent.Cancel ();
-      NS_LOG_LOGIC (
-        this << " Close Schedule DoClose at time " << Simulator::Now ().GetSeconds () << " to expire at time " << (Simulator::Now () + m_drainingPeriodTimeout.Get ()).GetSeconds ());
-      m_drainingPeriodEvent = Simulator::Schedule (m_drainingPeriodTimeout,
-                                                   &QuicSocketBase::DoClose,
-                                                   this);
+      ImmediateClose (false);
     }
   else if (m_idleTimeoutEvent.IsExpired ()
            and m_drainingPeriodEvent.IsExpired () and m_socketState != CLOSING
@@ -2228,7 +2267,13 @@ QuicSocketBase::OnReceivedFrame (QuicSubheader &sub)
 
       case QuicSubheader::CONNECTION_CLOSE:
         NS_LOG_INFO ("Received CONNECTION_CLOSE frame");
-        Close ();
+        // Peer is gone: stop sending at once (draining). Close() would keep flushing the tx buffer.
+        if (!m_immediateClose)
+          {
+            m_peerClosed = true;
+            ImmediateClose (false);
+            NotifyNormalClose ();
+          }
         break;
 
       case QuicSubheader::APPLICATION_CLOSE:
@@ -3009,6 +3054,10 @@ QuicSocketBase::ReceivedData (Ptr<Packet> p, const QuicHeader& quicHeader,
     }
   else if (m_socketState == CLOSING)
     {
+      if (m_peerClosed)
+        {
+          return; // draining: never answer the peer
+        }
       AbortConnection (m_transportErrorCode,
                        "Received packet in Closing state");
     }

@@ -10,7 +10,7 @@
 # Matrix CSV columns: task_id,video_name,metadata_csv,link_rate,run_seed
 #
 # SIMSTOP=auto (default) = the 4-arm benchmark session rule shared with bench_cpu_packed.sbatch and the
-# native heuristic worker: NSEG*4+30 s, floor 90, cap SIM_STOP_CAP (default 180 s). The pre-Phase-4 model
+# native heuristic worker: NSEG*4+30 s, floor 90, cap SIM_STOP_CAP (default 150 s). The pre-Phase-4 model
 # runs (bench/, bench_down/) used a fixed SIMSTOP=120/180 - pass SIMSTOP=<seconds> to reproduce those.
 # Phase 4 (clean checkpoint, 26x5): see benchmark/RUN_BRIDGE_ARMS.md (OUT_ROOT=Quic_artifacts/AiDashClean,
 # LOGDIR=logs_bench_aidashclean, SEMANTIC_SCALER=.../feature_scaler_semantic_clean.json).
@@ -42,14 +42,18 @@ NETWORK_SCALER="${NETWORK_SCALER:-}"
 SEMANTIC_SCALER="${SEMANTIC_SCALER:-}"
 SERVER_PY="${SERVER_PY:-$HOME/abr-llm-venv/bin/python}"
 NUMUES="${NUMUES:-3}"
-SIMSTOP="${SIMSTOP:-auto}"                                # auto = NSEG*4+30 clamped [90, SIM_STOP_CAP=180]
+SIMSTOP="${SIMSTOP:-auto}"                                # auto = NSEG*4+30 clamped [90, SIM_STOP_CAP=150]
 # ns-3 attribute defaults, space-separated ns3::Type::Attr=value, passed as run_ai_dash_llm.py --ns3-attr
 # (the scenario's CommandLine applies them before the helpers are built). Default = hold the FFT-codebook
-# beamforming cache for the whole session: the benchmark scenario has static UEs/IAB and a static 28 GHz
-# channel (UpdatePeriod 0), so the per-slot beam design is identical every slot; verified byte-identical
+# beamforming cache for the whole session: UEs/IAB are static and the 28 GHz channel matrices are generated
+# once (UpdatePeriod 0) - the satellite gNB moves (7.8 km/s) but its motion enters only through path loss -
+# so the per-slot beam design is identical every slot; verified byte-identical
 # against the 100 us default on a full 90 s cell (decisions, 1800 frame lines, session stats) and ~8.5x
 # faster wall (A/B 2026-10-28). NS3_ATTRS="" disables; with mobility or a channel UpdatePeriod > 0 the
 # expiry must not exceed that period.
+# SIM_STOP_CAP default 150 s: the single satellite pass drops below 25 deg elevation at t=151.2 s and the
+# IAB backhaul is lost from then on (every arm, every rate; existed in all earlier runs) -> sessions must
+# end inside the pass. Only big_buck_bunny (59 segments) reaches the cap.
 NS3_ATTRS="${NS3_ATTRS-ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s}"
 OUT_ROOT="${OUT_ROOT:-Quic_artifacts/AiDash/bench}"
 # Additive knobs (defaults preserve the LLM model arm exactly). The Pensieve baseline overrides
@@ -59,12 +63,12 @@ DEVICE="${DEVICE:-cuda}"
 LOGDIR="${LOGDIR:-logs_bench}"
 mkdir -p "$LOGDIR"
 
-echo "=== packed worker: MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR ckpt=$CKPT numUes=$NUMUES simStop=$SIMSTOP cap=${SIM_STOP_CAP:-180} out=$OUT_ROOT logs=$LOGDIR sem_scaler=${SEMANTIC_SCALER:-default} ns3_attrs=${NS3_ATTRS:-none} ==="
+echo "=== packed worker: MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR ckpt=$CKPT numUes=$NUMUES simStop=$SIMSTOP cap=${SIM_STOP_CAP:-150} out=$OUT_ROOT logs=$LOGDIR sem_scaler=${SEMANTIC_SCALER:-default} ns3_attrs=${NS3_ATTRS:-none} ==="
 
 sim_stop_for() {  # <metadata csv> -> seconds (identical to bench_cpu_packed.sbatch / dash_trace_worker.slurm)
   if [ "$SIMSTOP" = "auto" ]; then
     local nseg; nseg=$(($(wc -l < "$1") - 1))
-    local s=$((nseg * 4 + 30)); [ "$s" -lt 90 ] && s=90; [ "$s" -gt "${SIM_STOP_CAP:-180}" ] && s="${SIM_STOP_CAP:-180}"
+    local s=$((nseg * 4 + 30)); [ "$s" -lt 90 ] && s=90; [ "$s" -gt "${SIM_STOP_CAP:-150}" ] && s="${SIM_STOP_CAP:-150}"
     echo "$s"
   else
     echo "$SIMSTOP"

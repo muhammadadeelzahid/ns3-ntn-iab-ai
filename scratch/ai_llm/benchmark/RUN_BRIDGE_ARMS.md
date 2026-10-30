@@ -1,12 +1,12 @@
 # Running and scoring the benchmark arms (4-arm, 26-video, capped-session benchmark)
 
 Arms (paper_style.ALGOS): **Ours** (`AiDash`, LLM policy), **Quality-MPC** (`Qmpc`), **RobustMPC** (`Mpc`),
-**BOLA** (`BolaFull`). Every arm streams the same session: whole video capped at `SIM_STOP_CAP=180` s
-(`NSEG*4+30`, floor 90), 3 UEs, test split = `benchmark/test_videos_26.txt`, 5 S1-U rates
+**BOLA** (`BolaFull`). Every arm streams the same session: whole video capped at `SIM_STOP_CAP=150` s
+(`NSEG*4+30`, floor 90; see "Satellite pass" below), 3 UEs, test split = `benchmark/test_videos_26.txt`, 5 S1-U rates
 (100Gb/s, 36, 18, 9, 4.5 Mbps). The %-of-teacher reference is the greedy down-only causal teacher
 (`config/oracle_reward.json`) for every arm - never the DP oracle.
 
-## Simulation environment (fixed binary, 2026-10-28) - read before submitting anything
+## Simulation environment (fixed binary, 2026-10-28/30) - read before submitting anything
 Every arm must run on a binary built from `fix/client-freeze` (merged into `feat/mpc-baselines`) or later:
 - **Two ns-3 QUIC bugs** made 12-16 % of UEs freeze permanently in EVERY arm at EVERY rate on the old
   binary (commits 13b68f5: ACK frame appended in place to the retransmittable packet; 8babc18: post-RTO
@@ -14,15 +14,32 @@ Every arm must run on a binary built from `fix/client-freeze` (merged into `feat
   with the video unfinished, sim clock crawling (~1 sim-s per wall-hour), 3.9 MB cwnd. The DASH client
   also gained a dead-segment reconnect (`[DashClient] node N seg S dead ... -> reconnect #k`, max 8) and a
   30 s `MaxBufferLevel` (= the scoring player model) as defence in depth (a59f4cd, eaed4b3).
+- **Third round (2026-10-30, after re-run 1 on the fixed binary):** (i) QUIC `Close()` never stopped an
+  abandoned connection (no-op while the sent list was non-empty, FlushOnClose otherwise; a received
+  CONNECTION_CLOSE took the same path), so every reconnect left a full-rate zombie flow -> reconnect storms
+  under congestion; now an RFC 9000 immediate close (598e9c9). (ii) A connect-watchdog socket that finished
+  its handshake 0.1 ms after being abandoned crashed the client on a null socket (598e9c9); with that late
+  success ignored, the fixed 200 ms watchdog livelocked whenever the handshake RTT exceeded it -> exponential
+  backoff 200 ms..6.4 s (this commit series). (iii) A crash of ns-3 left the 3.6 client spinning in the ns3-ai
+  receive until the job limit; an external watchdog now kills it 30 s after ns-3 dies (1ec9137). Re-run 1
+  (`*_rerun1`) is archived and NOT used.
+- **Satellite pass -> `SIM_STOP_CAP=150`.** The donor gNB is a LEO satellite (550 km, 7.8 km/s along x,
+  starting overhead). At t = 151.2 s its elevation seen from the IAB node falls below 25 deg (the 3GPP
+  TR 38.811 tables round elevation to 10 deg, so 30 -> 20) and from that instant the IAB backhaul uplink is
+  decoded at SINR -inf and nothing crosses the backhaul again: in EVERY earlier run (old-env too) no
+  big_buck_bunny cell completed a segment after t = 151.2 s, whatever the arm, rate or seed. Sessions are
+  therefore capped at 150 s, inside the pass (only big_buck_bunny, 59 segments, reaches the cap). The
+  backhaul's uplink decode failures already grow from ~80 s (elevation ~45 deg) as the satellite recedes:
+  that is part of the scenario and identical for all arms. Disclose as "one satellite pass, sessions <= 150 s".
 - Results produced on the old binary (`Quic_artifacts/*_oldenv`, `logs_bench_*_oldenv`,
   `results/_oldenv_2026-10-27/`: Mpc 130/130 = 89.4 % of teacher, Qmpc 129/130 = 90.9 %, BolaFull 130/130,
   Ours 41 cells) are kept ONLY as the before/after disclosure. Never mix old-env and new-env cells.
 - **Beamforming cache (`NS3_ATTRS`)**: all three launchers (`bench_cpu_packed.sbatch`,
   `bench_model_packed.sbatch`, `dash_trace_worker.slurm`) default to
   `NS3_ATTRS=ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s`, forwarded as `--ns3-attr` to
-  `run_ai_dash_llm.py` (bridge) or `--ns3::...` to the binary (native). The scenario's UEs/IAB nodes are
-  static and the 28 GHz channel has `UpdatePeriod` 0, so the FFT-codebook beam design is identical every
-  slot; the A/B on a full 90 s cell was byte-identical (decisions, frame trace, session stats) and 8.5x
+  `run_ai_dash_llm.py` (bridge) or `--ns3::...` to the binary (native). UEs/IAB nodes are static and the
+  28 GHz channel matrices are generated once (`UpdatePeriod` 0); the satellite moves, but its motion only
+  enters through path loss, so the FFT-codebook beam design is identical every slot; the A/B on a full 90 s cell was byte-identical (decisions, frame trace, session stats) and 8.5x
   faster (~12 s instead of ~100 s wall per simulated second). Disclose it as a simulation setting.
   `NS3_ATTRS=""` restores the per-slot design; with mobility or a channel update period the expiry must not
   exceed that period (20 ms SSB beam-management period). The worker banner prints `ns3_attrs=`.
@@ -35,7 +52,7 @@ Every arm must run on a binary built from `fix/client-freeze` (merged into `feat
 ```
 # RobustMPC / Quality-MPC: torch-free, skylake, KPAR=20. Measured on the fixed binary WITH the beam cache:
 # 20 cells on one 40-core node run at ~75 s wall per simulated second (CPU contention; a lone cell is ~12 s),
-# so a 180 s cell takes ~3.8 h and a 12 h job holds ~3 waves = 4 slices of ~33 rows. Existing non-empty cells
+# so a 150 s cell takes ~3.1 h and a 12 h job holds ~3 waves = 4 slices of ~33 rows. Existing non-empty cells
 # are skipped on resubmit, BUT decisions.jsonl is streamed: after a timeout, delete the cells that have no
 # "done task" line in the slurm output before resubmitting, or the partial cells are silently skipped.
 for pol in qmpc mpc; do for s in "1 33" "34 66" "67 99" "100 130"; do set -- $s
@@ -73,7 +90,7 @@ scores anyway. Check the printed reason histogram.
 ```
 ALGORITHM=ns3::BolaClient NUM_UES=3 LINK_RATES="100Gb/s,36Mbps,18Mbps,9Mbps,4.5Mbps" RUNS_PER_METADATA=1 \
   VIDEO_LIST=$PWD/scratch/ai_llm/benchmark/test_videos_26.txt ALGO_SHORT_OVERRIDE=BolaFull \
-  SKIP_BUILD=1 SIM_STOP_CAP=180 MAX_PARALLEL=40 sbatch dash_trace_launch.slurm
+  SKIP_BUILD=1 SIM_STOP_CAP=150 MAX_PARALLEL=40 sbatch dash_trace_launch.slurm
 # seeds 1..5 == the five rates in LINK_RATES order; run_manifest.json carries link_rate
 python3.11 scratch/ai_llm/benchmark/build_dscore_links.py --arms BolaFull     # BolaFull_dscore/<v>/run_<cond>
 bash scratch/ai_llm/benchmark/score_report.sh BolaFull_dscore                  # greedy teacher; persists BolaFull_teacher_down

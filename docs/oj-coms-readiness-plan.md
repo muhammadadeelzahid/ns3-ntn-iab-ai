@@ -153,14 +153,25 @@ retransmitted as ONE packet whose size exceeded the UDP limit and was silently d
 8babc18. Defence in depth in the DASH client: dead-segment reconnect + 30 s playout-buffer cap (= the scoring
 player model), a59f4cd/eaed4b3. The fixed binary was validated on the six worst old-freeze cells
 (`Quic_artifacts/freeze_smoke.csv`, job 8134633): 0 frozen UEs, every reconnect succeeded, no crawl.
-Speed: the healthy-phase CPU cost was the mmWave FFT-codebook beam design redone every slot although the
-scenario is static (UEs/IAB fixed, channel `UpdatePeriod` 0); it is now cached for the session through
+Speed: the healthy-phase CPU cost was the mmWave FFT-codebook beam design redone every slot although its
+inputs never change (UEs/IAB fixed, channel matrices generated once with `UpdatePeriod` 0; the satellite's
+motion only changes path loss); it is now cached for the session through
 `ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s` (attribute added in 0805258, forwarded by every
 launcher via `NS3_ATTRS`, 4c040cf), verified byte-identical on a full cell and 8.5x faster. **Consequence:
 every arm is re-run on the fixed binary**; the old-binary results are archived as `*_oldenv` and reported
 only as the before/after disclosure (old Mpc 89.4 % / Qmpc 90.9 % of teacher, freeze 12-16 %). The
 manuscript must state the QUIC fixes, the beam-cache setting and the 30 s buffer cap as simulation settings.
 Runbook: `scratch/ai_llm/benchmark/RUN_BRIDGE_ARMS.md` ("Simulation environment").
+
+**Re-run 1 on the fixed binary (2026-10-29/30, jobs 8137137-44, 8137413-16; archived `*_rerun1`, not used):**
+4 x 130 cells, permanently frozen UEs down to 1.8-4.1 % from 12-16 %, but three more defects: zombie QUIC
+flows after every client reconnect (Close() never stopped an abandoned connection), a null-socket crash when
+an abandoned handshake completed late (3 cells), and a client hang after an ns-3 crash (2 cells, 7 h each).
+Fixed with an RFC 9000 immediate close, a guarded connect watchdog with exponential backoff, and an external
+simulator-death watchdog. The same analysis found that the scenario's single LEO pass (550 km, 7.8 km/s)
+drops below 25 deg elevation at t = 151.2 s, after which the IAB backhaul is lost in EVERY run (old-env
+included): the session cap is therefore 150 s (was 180 s), which changes only big_buck_bunny. The
+manuscript states "one satellite pass; sessions <= 150 s". All four arms are re-run once more (re-run 2).
 
 ## Phase 5 — Content-vs-network ablation
 - With VMAF fixed, run the ablation a journal will expect: network-only vs content+network variant of

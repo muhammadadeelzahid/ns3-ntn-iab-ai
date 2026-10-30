@@ -121,6 +121,37 @@ def _bridge_decision(server, state):
         resp.get("reason", "bridge"), False
 
 
+SIM_DEATH_GRACE_S = 30
+
+
+def _start_sim_watchdog(exp):
+    """Kill THIS process if the ns-3 subprocess dies while we block in msg.PyRecvBegin().
+
+    The binding spins in C holding the GIL while it waits for ns-3, so a crashed simulator (seen on the
+    fixed binary: a SIGSEGV at teardown) left the client at 100 % CPU until the job time limit, and the
+    in-loop poll() check never ran again. An external shell process does not need the GIL: once the
+    simulator process is gone (or a zombie, since we never reap it while spinning) it waits
+    SIM_DEATH_GRACE_S and SIGKILLs us. Decisions are flushed per row, the server exits on stdin EOF,
+    and the worker sees a non-zero rc. On a normal exit the finally block kills the watchdog first.
+    """
+    proc = getattr(exp, "proc", None)
+    if proc is None:
+        return None
+    script = (
+        "P=%d; ME=%d; "
+        "while [ -e /proc/$P ] && ! grep -qE '^[0-9]+ \\(.*\\) Z' /proc/$P/stat 2>/dev/null; do sleep 5; done; "
+        "sleep %d; "
+        "if [ -e /proc/$ME ]; then echo '[sim-watchdog] ns-3 subprocess gone; killing the stuck client' >&2; "
+        "kill -9 $ME; fi" % (proc.pid, os.getpid(), SIM_DEATH_GRACE_S)
+    )
+    try:
+        return subprocess.Popen(["/bin/sh", "-c", script], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, start_new_session=True)
+    except OSError as exc:
+        print("[Python] WARN: sim watchdog not started: %s" % exc, flush=True)
+        return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ns-3 AiDashClient with metadata-aware policy.")
     parser.add_argument(
@@ -299,6 +330,7 @@ def main() -> None:
         setting[key] = value
     setting["shmPrefix"] = shm_prefix  # ns-3 side rebuilds the matching shm names from this
     msg = exp.run(setting=setting, show_output=True)
+    sim_watchdog = _start_sim_watchdog(exp)
 
     video = _resolve_video_name(args)
     decisions_path = _resolve_decisions_path(args, video)
@@ -386,6 +418,11 @@ def main() -> None:
     except KeyboardInterrupt:
         print("[Python] Interrupted by user.", flush=True)
     finally:
+        if sim_watchdog is not None:
+            try:
+                sim_watchdog.kill()
+            except Exception:  # pylint: disable=broad-except
+                pass
         exp.kill()
         # Shut down the inference server (close its stdin -> EOF -> clean exit).
         if server is not None:

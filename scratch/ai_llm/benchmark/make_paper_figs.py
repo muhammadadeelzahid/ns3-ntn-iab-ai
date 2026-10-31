@@ -20,7 +20,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 def _results_path(stem):
-    return model_arm.results_txt() if stem == "AiDash" else os.path.join(RESULTS_DIR, "%s.txt" % stem)
+    if stem == "AiDash":
+        return model_arm.results_txt()
+    path = os.path.join(RESULTS_DIR, "%s.txt" % stem)
+    # native heuristics are scored by score_report.sh <ARM>_dscore -> results/<ARM>_dscore.txt
+    return path if os.path.exists(path) else os.path.join(RESULTS_DIR, "%s_dscore.txt" % stem)
 
 
 def load_all():
@@ -34,9 +38,9 @@ def _true_stall_by_arm():
     actual ns-3 MPEG-player interruption instead."""
     import csv
     path = os.path.join(RESULTS_DIR, "true_stall.csv")
-    # Exclude the degenerate single-UE starvation cell (pexels_34254266 @ 4.5 Mb/s) for all arms,
-    # matching the QoE table; it is reported separately as a closed-loop fairness finding.
-    exclude = {("pexels_34254266", 5)}
+    # Same exclusion set as absolute_qoe_table.EXCLUDE_CELLS (empty on the fixed binary: the former
+    # degenerate cell pexels_34254266 @ 4.5 Mb/s has 0 s stall in every arm of re-run 2).
+    exclude = set()
     by_arm = {}
     for row in csv.DictReader(open(path)):
         if (row["video"], int(row["cond"])) in exclude:

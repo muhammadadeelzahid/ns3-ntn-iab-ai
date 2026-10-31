@@ -48,9 +48,10 @@ CFG = os.path.join(_REPO, "scratch", "ai_llm", "config", "oracle_reward.json")
 # e.g. the old 10-video shrunk matrix). Missing cells for an arm are skipped, so partial arms still tabulate.
 VIDS = [v for v in open(os.environ.get("BENCH_VIDS", os.path.join(_HERE, "test_videos_26.txt"))).read().split() if v]
 HEURS = ["BolaFull"]
-# Degenerate cell excluded from the QoE means for ALL policies: a deterministic single-UE scheduler
-# starvation at 4.5 Mb/s (Pensieve stalls one UE 83 s; analyzed separately as a closed-loop finding).
-EXCLUDE_CELLS = {("pexels_34254266", 5)}
+# Cells excluded from the QoE means for ALL policies. The old 10-video benchmark excluded
+# ("pexels_34254266", 5) (Pensieve starved one UE for 83 s at 4.5 Mb/s on the pre-fix binary). On the fixed
+# binary (re-run 2, 2026-10-31) that cell has 0 s stall in every arm, so nothing is excluded any more.
+EXCLUDE_CELLS = set()
 
 
 def true_stall_sums():
@@ -119,7 +120,7 @@ def main():
 
     # ---- stdout review ----
     name = dict(ALGOS)
-    print("Absolute VMAF-QoE per chunk (true ns-3 stall), mean over %d videos (one degenerate cell excluded):  (%d runs)" % (len(VIDS), n_run))
+    print("Absolute VMAF-QoE per chunk (true ns-3 stall), mean over %d videos:  (%d runs)" % (len(VIDS), n_run))
     for a in stems:
         n_a = sum(len(cell[(a, c)]) for c in COND_ORDER)
         if n_a < len(VIDS) * len(COND_ORDER) - len(EXCLUDE_CELLS):
@@ -190,7 +191,7 @@ def main():
     tex = ["% Table 2 -- absolute VMAF-QoE per chunk (true ns-3 stall). "
            "LLM-ABR overall improvement over best heuristic = " + imp + r"\%.",
            r"\begin{table}[t]\centering\footnotesize",
-           r"\caption{Absolute perceptual QoE (VMAF-based) per video chunk, mean over the 10 test videos (one degenerate cell excluded) and "
+           r"\caption{Absolute perceptual QoE (VMAF-based) per video chunk, mean over the 26 test videos and "
            r"five bottleneck link rates (true ns-3 rebuffering). LLM-ABR improves over the best heuristic by "
            + imp + r"\%. Higher is better.}",
            r"\label{tab:absqoe}",

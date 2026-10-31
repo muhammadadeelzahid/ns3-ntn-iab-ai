@@ -46,6 +46,8 @@ def main():
     per = {}
     for stem, _ in ALGOS:
         path = model_arm.results_txt() if stem == "AiDash" else os.path.join(RESULTS_DIR, "%s.txt" % stem)
+        if not os.path.exists(path):  # native heuristics are scored by score_report.sh <ARM>_dscore
+            path = os.path.join(RESULTS_DIR, "%s_dscore.txt" % stem)
         per[stem] = parse_results(path) if os.path.exists(path) else []
 
     # build per-(algo,cond) mean %oracle, per-algo overall mean %oracle, and per-cond regret

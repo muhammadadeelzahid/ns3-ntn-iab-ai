@@ -62,6 +62,48 @@ LINEAR_SMOOTH_PENALTY = 1.0
 OBJECTIVES = ("linear", "qoe")
 
 
+class RobustThroughputEstimator:
+    """Per-UE RobustMPC throughput predictor (shared by RobustMpcPolicy and the model arm's serving guard).
+
+    Keeps the last `hist_len` realized per-chunk throughput samples and the relative errors of the
+    predictions that preceded them; prediction = harmonic mean / (1 + max recent error), exactly the
+    reference (hongzimao/pensieve test/mpc.py). The UNdiscounted harmonic mean is stored as the step's
+    prediction, as the reference does."""
+
+    def __init__(self, hist_len: int = HIST_LEN) -> None:
+        self.hist_len = int(hist_len)
+        self._samples: Dict[int, deque] = {}
+        self._preds: Dict[int, deque] = {}
+        self._errors: Dict[int, deque] = {}
+
+    def reset(self) -> None:
+        self._samples.clear(); self._preds.clear(); self._errors.clear()
+
+    def has_samples(self, node: int) -> bool:
+        return bool(self._samples.get(node))
+
+    def ingest(self, node: int, sample_bps: float) -> None:
+        """Record a realized per-chunk throughput and the error of the prediction that preceded it."""
+        if sample_bps <= 0.0:
+            return
+        preds = self._preds.setdefault(node, deque(maxlen=self.hist_len))
+        errs = self._errors.setdefault(node, deque(maxlen=self.hist_len))
+        if preds:  # curr_error = |past_bandwidth_ests[-1] - actual| / actual
+            errs.append(abs(preds[-1] - sample_bps) / sample_bps)
+        self._samples.setdefault(node, deque(maxlen=self.hist_len)).append(sample_bps)
+
+    def predict(self, node: int) -> Tuple[Optional[float], float, float]:
+        """(future_bw_bps or None if no samples, harmonic_mean, max_err)."""
+        samples = self._samples.get(node)
+        if not samples:
+            return None, 0.0, 0.0
+        hm = len(samples) / sum(1.0 / s for s in samples)
+        errs = self._errors.get(node)
+        max_err = max(errs) if errs else 0.0
+        self._preds.setdefault(node, deque(maxlen=self.hist_len)).append(hm)
+        return hm / (1.0 + max_err), hm, max_err
+
+
 class RobustMpcPolicy:
     def __init__(
         self,
@@ -111,38 +153,35 @@ class RobustMpcPolicy:
 
         self._combos: Dict[int, np.ndarray] = {}
         # per-UE rolling state (mirrors the reference's past_bandwidths / past_bandwidth_ests / past_errors)
-        self._samples: Dict[int, deque] = {}
-        self._preds: Dict[int, deque] = {}
-        self._errors: Dict[int, deque] = {}
+        self._est = RobustThroughputEstimator(self.hist_len)
         self._last_rung: Dict[int, int] = {}
         self._seen: Dict[int, bool] = {}
 
     # ------------------------------------------------------------------ state
     def reset_history(self) -> None:
-        self._samples.clear(); self._preds.clear(); self._errors.clear()
+        self._est.reset()
         self._last_rung.clear(); self._seen.clear()
+
+    # read-only views of the estimator state (tests and diagnostics inspect them)
+    @property
+    def _samples(self) -> Dict[int, deque]:
+        return self._est._samples
+
+    @property
+    def _preds(self) -> Dict[int, deque]:
+        return self._est._preds
+
+    @property
+    def _errors(self) -> Dict[int, deque]:
+        return self._est._errors
 
     def _ingest_sample(self, node: int, sample_bps: float) -> None:
         """Record a realized per-chunk throughput and the error of the prediction that preceded it."""
-        if sample_bps <= 0.0:
-            return
-        preds = self._preds.setdefault(node, deque(maxlen=self.hist_len))
-        errs = self._errors.setdefault(node, deque(maxlen=self.hist_len))
-        if preds:  # curr_error = |past_bandwidth_ests[-1] - actual| / actual
-            errs.append(abs(preds[-1] - sample_bps) / sample_bps)
-        self._samples.setdefault(node, deque(maxlen=self.hist_len)).append(sample_bps)
+        self._est.ingest(node, sample_bps)
 
     def predict_throughput(self, node: int) -> Tuple[Optional[float], float, float]:
-        """(future_bw_bps or None if no samples, harmonic_mean, max_err). Stores the UNdiscounted
-        harmonic mean as this step's prediction (as the reference does)."""
-        samples = self._samples.get(node)
-        if not samples:
-            return None, 0.0, 0.0
-        hm = len(samples) / sum(1.0 / s for s in samples)
-        errs = self._errors.get(node)
-        max_err = max(errs) if errs else 0.0
-        self._preds.setdefault(node, deque(maxlen=self.hist_len)).append(hm)
-        return hm / (1.0 + max_err), hm, max_err
+        """(future_bw_bps or None if no samples, harmonic_mean, max_err) - see RobustThroughputEstimator."""
+        return self._est.predict(node)
 
     # ------------------------------------------------------------------ planning
     def _combos_for(self, k: int) -> np.ndarray:

@@ -82,6 +82,8 @@ def _spawn_inference_server(args):
             cmd += ["--w-stall", str(args.w_stall)]
         if getattr(args, "thr_safety", None) is not None:
             cmd += ["--thr-safety", str(args.thr_safety)]
+    if getattr(args, "guard_estimator", None):
+        cmd += ["--guard-estimator", args.guard_estimator]
     if args.device:
         cmd += ["--device", args.device]
     if not args.use_missing_masks:
@@ -207,6 +209,8 @@ def parse_args() -> argparse.Namespace:
              "QoE (network-only); 'qmpc' = RobustMPC on the benchmark scoring QoE (content-aware). "
              "mpc/qmpc/greedy need no --checkpoint and no GPU.",
     )
+    parser.add_argument("--guard-estimator", choices=("avg", "robust"), default=None,
+                        help="Model arm: throughput estimate of the server's no-stall guard (default: server default avg).")
     parser.add_argument("--w-stall", type=float, default=None,
                         help="Override w_stall for --policy greedy.")
     parser.add_argument("--thr-safety", type=float, default=None,

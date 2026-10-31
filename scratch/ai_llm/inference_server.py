@@ -36,13 +36,13 @@ try:
     from ai_llm.inference import LlmAbrPolicy, PensievePolicy
     from ai_llm.greedy_teacher import greedy_rung as _teacher_greedy_rung
     from ai_llm.metadata_loader import load_metadata_index, LADDER_LEVELS
-    from ai_llm.mpc_policy import RobustMpcPolicy
+    from ai_llm.mpc_policy import RobustMpcPolicy, RobustThroughputEstimator, MIN_FETCH_S
     from ai_llm.paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
 except ImportError:  # run directly from scratch/ai_llm
     from inference import LlmAbrPolicy, PensievePolicy
     from greedy_teacher import greedy_rung as _teacher_greedy_rung
     from metadata_loader import load_metadata_index, LADDER_LEVELS
-    from mpc_policy import RobustMpcPolicy
+    from mpc_policy import RobustMpcPolicy, RobustThroughputEstimator, MIN_FETCH_S
     from paths import DEFAULT_NETWORK_SCALER, DEFAULT_SEMANTIC_SCALER, NS3_RATE_LADDER_BPS
 
 
@@ -120,6 +120,13 @@ def parse_args() -> argparse.Namespace:
                     help="Safety factor on the guard's no-stall bitrate budget (0=guard off).")
     ap.add_argument("--guard-seg-dur-s", type=float, default=3.3,
                     help="Segment duration (s) used in the guard's download-feasibility budget.")
+    # Throughput the guard budgets with. "avg" = ns-3's 10 s plain average (throughput_estimate_bps; the
+    # original behaviour). "robust" = min(avg, RobustMPC estimate from the realized per-chunk samples:
+    # harmonic mean of the last 5 / (1 + max recent prediction error)). The 10 s average lags a collapse of
+    # the per-UE share (Phase-A diagnosis: the largest 4.5 Mb/s stalls followed guarded decisions taken on a
+    # stale 2-3.5 Mb/s average while the UE was getting ~1.5 Mb/s).
+    ap.add_argument("--guard-estimator", choices=("avg", "robust"), default="avg",
+                    help="Throughput estimate used by the no-stall guard (default avg = unchanged).")
     return ap.parse_args()
 
 
@@ -189,6 +196,8 @@ def main() -> None:
     # does NOT carry this field, so without this the model gets a constant 0.0 (a log-feature -> extreme
     # OOD z-score) and over-asks online. Mirrors extract_trace.py:_last_segment_bitrate.
     last_rung_by_node: dict = {}
+    # --guard-estimator robust: per-UE realized per-chunk throughput (RobustMPC predictor, shared code).
+    guard_est = RobustThroughputEstimator() if args.guard_estimator == "robust" else None
 
     # One JSON request per line in; one JSON response per line out. EOF on stdin -> exit.
     for line in sys.stdin:
@@ -269,12 +278,26 @@ def main() -> None:
                 # cold-start over-ask AND a single egregious over-ask that would drain a healthy buffer.
                 buf = float(req.get("buffer_level_s", 0.0))
                 thr = float(req.get("throughput_estimate_bps", 0.0))
+                if guard_est is not None:
+                    # realized rate of the segment just downloaded (seg_id-2, 0-indexed) at the rung we chose
+                    # for it - the same sample RobustMPC uses; the guard budgets with min(avg, robust).
+                    prev_meta = metadata_index.get(seg_id - 2)
+                    last_rung = last_rung_by_node.get(node)
+                    fetch = float(req.get("segment_fetch_time_s", 0.0))
+                    if prev_meta is not None and last_rung is not None and fetch > 0.0:
+                        size = float(prev_meta.size_bytes.get(LADDER_LEVELS[last_rung], 0.0))
+                        guard_est.ingest(node, 8.0 * size / max(fetch, MIN_FETCH_S))
+                    robust_bps, _, _ = guard_est.predict(node)
+                    if robust_bps is not None and robust_bps > 0.0:
+                        thr = min(thr, robust_bps) if thr > 0.0 else robust_bps
                 if args.guard_safety > 0.0 and thr > 0.0:
                     chosen_rung = _bps_to_rung(chosen_bps)
                     cap = _feasible_rung(thr, segment_meta, args.guard_safety, buf, args.guard_seg_dur_s)
                     if chosen_rung > cap:
                         chosen_bps = float(NS3_RATE_LADDER_BPS[cap])
                         reason = "%s+guard(buf%.1f:r%d->r%d)" % (reason, buf, chosen_rung, cap)
+                        if guard_est is not None:
+                            reason += "[thr%.2f]" % (thr / 1e6)
                 last_rung_by_node[node] = _bps_to_rung(chosen_bps)
                 resp = {
                     "chosen_bitrate_bps": int(chosen_bps),

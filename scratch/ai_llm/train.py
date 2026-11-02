@@ -179,8 +179,10 @@ class AbrJsonlDataset(Dataset):
 
     @property
     def network_dim(self) -> int:
-        """Effective network channel count: 7, or 7 + len(SENTINEL_MASK_ORDER) with masks."""
-        return NETWORK_DIM + (len(SENTINEL_MASK_ORDER) if self._use_missing_masks else 0)
+        """Effective network channel count: the scaler's feature count (7 for the original scaler, 8 with
+        the derived realized-throughput feature), plus len(SENTINEL_MASK_ORDER) with masks."""
+        base = len(self._net_scaler["feature_names"]) if self._net_scaler else NETWORK_DIM
+        return base + (len(SENTINEL_MASK_ORDER) if self._use_missing_masks else 0)
 
     def _features(self, record: Dict):
         window_obs = record.get("_window_obs") or [record.get("observation", {}) or {}]

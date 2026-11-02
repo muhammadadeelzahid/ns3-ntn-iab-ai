@@ -165,21 +165,49 @@ def heuristic_stall(arm):
     return out
 
 
+def _parse_extra_arm(spec):
+    """KEY=bridge:STEM[:LOGDIR] | KEY=heuristic:ARM  (Phase F seed sets, e.g. Qmpc_s2=bridge:Qmpc_s2:logs_bench_qmpc_s2)."""
+    key, rest = spec.split("=", 1)
+    parts = rest.split(":")
+    if parts[0] == "bridge":
+        logdir = parts[2] if len(parts) > 2 else "logs_bench_" + parts[1].lower()
+        return key, model_stall(parts[1], logdir=os.path.join(_REPO, logdir))
+    if parts[0] == "heuristic":
+        return key, heuristic_stall(parts[1])
+    raise SystemExit("bad --arm spec %r (want KEY=bridge:STEM[:LOGDIR] or KEY=heuristic:ARM)" % spec)
+
+
 def main():
-    # Each bridge arm resolves sim.log from ITS OWN worker log dir only (never another arm's).
-    print(model_arm.describe())
-    arms = {"AiDash": model_stall(model_arm.dec_subdir(), logdir=model_arm.logdir()),
-            "Qmpc": model_stall("Qmpc", logdir=os.path.join(_REPO, "logs_bench_qmpc")),
-            "Mpc": model_stall("Mpc", logdir=os.path.join(_REPO, "logs_bench_mpc")),
-            "BolaFull": heuristic_stall("BolaFull")}   # BOLA re-run on whole videos (4-arm benchmark)
+    import argparse
+    ap = argparse.ArgumentParser(description="true closed-loop stall per (arm, video, cond) -> results/true_stall.csv")
+    ap.add_argument("--arm", action="append", default=[], metavar="KEY=bridge:STEM[:LOGDIR]|KEY=heuristic:ARM",
+                    help="extra arm(s); with --arm the default four arms are NOT recomputed and the CSV rows of "
+                         "the given keys are replaced in place (other arms' rows kept)")
+    args = ap.parse_args()
     outcsv = os.path.join(_HERE, "results", "true_stall.csv")
+    # Each bridge arm resolves sim.log from ITS OWN worker log dir only (never another arm's).
+    if args.arm:
+        arms = dict(_parse_extra_arm(a) for a in args.arm)
+        keep = []
+        if os.path.isfile(outcsv):
+            with open(outcsv, newline="") as fh:
+                keep = [r for r in csv.DictReader(fh) if r["arm"] not in arms]
+    else:
+        print(model_arm.describe())
+        arms = {"AiDash": model_stall(model_arm.dec_subdir(), logdir=model_arm.logdir()),
+                "Qmpc": model_stall("Qmpc", logdir=os.path.join(_REPO, "logs_bench_qmpc")),
+                "Mpc": model_stall("Mpc", logdir=os.path.join(_REPO, "logs_bench_mpc")),
+                "BolaFull": heuristic_stall("BolaFull")}   # BOLA re-run on whole videos (4-arm benchmark)
+        keep = []
     with open(outcsv, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["arm", "video", "cond", "stall_s", "stall_sum_s"])  # stall_s=mean per-UE (Fig 1); stall_sum_s=sum over UEs
+        for r in keep:
+            w.writerow([r["arm"], r["video"], r["cond"], r["stall_s"], r.get("stall_sum_s", "")])
         for arm, d in arms.items():
             for (v, c), (m, s) in sorted(d.items()):
                 w.writerow([arm, v, c, "%.4f" % m, "%.4f" % s])
-    print("wrote", outcsv)
+    print("wrote", outcsv, "(%d kept rows + %d arms)" % (len(keep), len(arms)))
     print("\n%-8s | %6s %6s %6s %6s %6s | %7s | n   (mean per-UE stall, s)" %
           ("arm", "100G", "36M", "18M", "9M", "4.5M", "overall"))
     for arm, d in arms.items():

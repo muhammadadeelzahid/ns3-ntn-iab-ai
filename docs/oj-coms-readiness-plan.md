@@ -173,6 +173,47 @@ drops below 25 deg elevation at t = 151.2 s, after which the IAB backhaul is los
 included): the session cap is therefore 150 s (was 180 s), which changes only big_buck_bunny. The
 manuscript states "one satellite pass; sessions <= 150 s". All four arms are re-run once more (re-run 2).
 
+## Phase 4b — Model v3 (improve "Ours" on the fixed binary; 2026-10-31 → )
+Re-run 2 (fixed binary, 150 s cap, 1 seed) gave Ours 93.6 % of the greedy teacher (best of 4 arms) but
+Quality-MPC wins absolute QoE (13.18 vs 12.92) because Ours stalls 2× more at 4.5 Mb/s. Rules: select only
+on the 128 train / 26 val videos (never the 26 test videos); baselines untouched; fixed link rates only.
+- **A. Diagnosis** (`benchmark/diag_rerun2.py` → `results/diag_rerun2.txt`): the stall is a few early
+  4.5 Mb/s events; 38 % follows a decision the serving guard had already lowered using the stale 10 s
+  throughput average; the raw model over-asks at low rates (guard fires on 60–65 % of decisions); no
+  late-session collapse.
+- **B. Robust guard — REJECTED.** `inference_server.py --guard-estimator robust` (min of the 10 s average and
+  the RobustMPC per-chunk estimate; `mpc_policy.RobustThroughputEstimator`, parity-tested, 0/1645
+  mismatches on recorded Mpc/Qmpc decisions). On 26 val videos × {9, 4.5} Mb/s: 87.3 % vs 93.9 % of
+  teacher, stall 9 Mb/s 0.27 → 1.85 s, 4.5 Mb/s 2.75 → 0.97 s (fires on 86 %). Default stays `avg`.
+- **Training-loader bug (fixed, 3b4fc35).** `train.py` keyed session windows by (run_id, node_id), which
+  repeat across videos, so 99.9 % of 4-step windows mixed other videos' observations (train/serve
+  mismatch). Keyed by (video_name, run_id, node_id) now. Retrain on unchanged data: val macro-F1
+  0.77–0.79 → 0.81–0.82, but the live val check is a tie (93.6 % vs 93.9 %): fidelity to the greedy
+  teacher is not the bottleneck.
+- **C. Data re-collected on the fixed binary** (train+val videos only; test excluded): BOLA native
+  (1220 runs, 244 videos incl. the 90 overflow videos, seeds 11–15, 0.1 % frozen UEs), Quality-MPC bridge
+  (770 cells, seeds 21–25, 0.1 % frozen, 93.4 % teacher) and one round of the current model itself
+  (384 cells at 18/9/4.5 Mb/s, seeds 33–35, 92.3 % teacher; the only "frozen" UEs are `tears_of_steel`
+  at 9/4.5 Mb/s stuck at segment 5, identical in the Quality-MPC pass → a simulator property of that
+  cell, rows kept). Sessions now reach segment 40+ and the 30 s buffer cap (old data: ≤ 14 segments,
+  BOLA only, old binary). `train_jsonl_v3/`: 43,719 train / 10,918 val rows without, 56,498 train with
+  the model round; 14,846 extra rows for the 90 overflow videos.
+- **D. Lookahead teacher** (`relabel_lookahead.py`, K = 5 steps of `RobustMpcPolicy(objective="qoe")` on
+  the same `oracle_reward.json`; K = 1 reproduces the greedy labels 96 %). Two throughput inputs:
+  the observed estimate, or the RobustMPC predictor over realized per-chunk throughput. Offline val
+  replay QoE per session: greedy −3037, K5-estimate −1664, K5-robust −824, but the robust labels cut mean
+  VMAF 36 → 28 and replay stall is pessimistic (51 s/session for greedy vs < 3.5 s/UE live), so the
+  teacher is chosen on the LIVE val check, not on replay.
+- **E. Retrain grid** (`slurm/train_llm.sbatch`, window 4, 3 seeds): labels {greedy, K5-estimate,
+  K5-robust} × data {BOLA+Qmpc, +model round}. Val macro-F1 (own labels, seeds 41/42/43): greedy
+  .795/.810/.802; K5-estimate .688/.691/.683; K5-robust .565/.607/.601; greedy+model-round
+  .784/.813/.802. Offline replay of every checkpoint: `slurm/eval_v3_ckpts.slurm`. Live val check
+  (26 val videos × {9, 4.5} Mb/s, seed 42 of each set, `Quic_artifacts/ValV3_*`): **pending**.
+  Reference on the same cells: current model 93.9 %, stall 0.27 / 2.75 s per UE.
+- **F. Final benchmark**: 3 seeds per cell for all four arms on the 26 test videos, paired bootstrap CIs
+  and Wilcoxon per rate (extend `per_video_qoe_ci.py`); re-run 2 kept as the "Ours (v2 data)" row.
+  **Not started** (gated on E).
+
 ## Phase 5 — Content-vs-network ablation
 - With VMAF fixed, run the ablation a journal will expect: network-only vs content+network variant of
   *our* policy, on the clean metric, to quantify the content contribution directly (the thing the

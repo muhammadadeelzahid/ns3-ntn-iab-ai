@@ -113,3 +113,30 @@ commands above with `MODEL_STEM=AiDashClean` exported once Phase 4 is scored.
 `PYTHONPATH=scratch .venv/bin/python scratch/ai_llm/tests/test_mpc_policy.py` (7 tests: objective parity with
 `dp_oracle` to 1e-9, K=1 == `greedy_rung`, reference enumeration equality, tie rule, serving flow).
 `PYTHONPATH=scratch .venv/bin/python scratch/ai_llm/benchmark/mpc_offline_smoke.py` (open-loop replay sanity).
+
+## Model v3 — data re-collection, relabelling, training grid (train/val videos ONLY; never test)
+# Video pools: benchmark/v3_train_videos.txt (128), val_videos_26.txt (26), v3_extra_videos.txt (90 overflow),
+# v3_collect_videos.txt (244 = all three), v3_trainval_videos.txt (154). Seeds disjoint from the benchmark (1-10).
+# Native BOLA: dash_trace_launch.slurm over v3_collect_videos.txt, seeds 11-15 -> Quic_artifacts/V3Bola;
+#   python3.11 scratch/ai_llm/dataset_builder.py --artifacts-root Quic_artifacts --algo-short V3Bola \
+#     --metadata-dir /project/6030214/adeel/abr/output/metadata --output-dir train_jsonl_v3_raw/bola --teacher-source greedy
+# Quality-MPC: bench_cpu_packed.sbatch, MATRIX=Quic_artifacts/v3_collect_qmpc.csv (770 rows, seeds 21-25; 12 h jobs
+#   manage ~55 cells at KPAR=20: slice accordingly, and delete partial cells before resubmitting), then
+#   bash scratch/ai_llm/benchmark/score_bridge_arm.sh V3Qmpc scratch/ai_llm/benchmark/v3_trainval_videos.txt
+#   -> Quic_artifacts/V3Qmpc_shards (training-row format with the greedy teacher).
+# Model round (DAgger): bench_model_packed.sbatch, MATRIX=Quic_artifacts/v3_collect_dagger.csv (128 train videos x
+#   18/9/4.5 Mb/s, seeds 33-35), CKPT=<current model>, then score_bridge_arm.sh V3Dagger v3_train_videos.txt.
+#   score_bridge_arm renames run dirs to run_<cond>, so its run_id collides with V3Qmpc's on the same video:
+#   prefix run_id (dagger_run_N) before merging (train.py windows are keyed by (video_name, run_id, node_id)).
+# Freeze audit per collection: python3.11 scratch/ai_llm/benchmark/freeze_audit.py 'logs_<x>/task_*.log'
+# Split by the video lists into train_jsonl_v3/<source>/{train,val[,extra]}; relabel:
+#   python scratch/ai_llm/relabel_lookahead.py --relabel IN OUT --horizon 5 --bw estimate|robust
+#   (--compare DIR prints replay QoE of greedy vs lookahead labels; replay stall is pessimistic, choose LIVE)
+# Merged sets (symlinks): train_jsonl_v3/merged_{greedy,k5estimate,k5robust}[_dag]/{train,val}.
+# Train (3 seeds):  sbatch --job-name=v3-<lab>-s<S> --export=ALL,DATA_DIR=../../train_jsonl_v3/merged_<lab>/train,\
+#   VAL_DATA_DIR=../../train_jsonl_v3/merged_<lab>/val,CKPT_DIR=checkpoints_v3_<lab>,WINDOW=4,SEED=<S>,\
+#   SEMANTIC_SCALER=config/feature_scaler_semantic_clean.json scratch/ai_llm/slurm/train_llm.sbatch v2
+# Offline replay of the grid: sbatch scratch/ai_llm/slurm/eval_v3_ckpts.slurm  (LABELS=... OUT=...)
+# Live val check (52 cells): bench_model_packed.sbatch MATRIX=Quic_artifacts/val_matrix_guard.csv CKPT=... \
+#   OUT_ROOT=Quic_artifacts/ValV3_<lab> LOGDIR=logs_valv3_<lab> KPAR=6, two slices [1,26] [27,52];
+#   score: score_bridge_arm.sh ValV3_<lab> scratch/ai_llm/benchmark/val_videos_26.txt

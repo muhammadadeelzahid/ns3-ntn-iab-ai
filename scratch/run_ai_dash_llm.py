@@ -13,6 +13,7 @@ Falls back to the in-process FDASH heuristic on missing metadata, a policy error
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -215,6 +216,15 @@ def parse_args() -> argparse.Namespace:
                         help="Model arm: throughput estimate of the server's no-stall guard (default: server default avg).")
     parser.add_argument("--guard-strict-below-s", type=float, default=None,
                         help="Passed to inference_server --guard-strict-below-s (low-buffer strict guard).")
+    parser.add_argument("--ns3-cwd", default="auto",
+                        help="Working directory for the ns-3 process (waf --cwd). ns-3 writes its trace files "
+                             "(RlcAmBufferSize.txt, Ul/DlPdcpStats.txt, DashClientTx_Node_*.txt, ...) with FIXED "
+                             "names into its cwd, so cells that share one cwd append to the same Lustre files and "
+                             "serialise on their locks (2026-11-02: 250 concurrent cells -> every ns-3 blocked in "
+                             "write(), 2-8x slower). 'auto' = $SLURM_TMPDIR/ns3_cwd_<shm-id> (node-local) when set, "
+                             "else <decisions dir>/ns3_cwd; 'repo' = the ns-3 root (old behaviour); or a path. "
+                             "The directory gets symlinks src/ contrib/ scratch/ build/ -> the ns-3 root so the "
+                             "modules' relative data reads (src/mmwave/model/...) keep working.")
     parser.add_argument("--w-stall", type=float, default=None,
                         help="Override w_stall for --policy greedy.")
     parser.add_argument("--thr-safety", type=float, default=None,
@@ -287,9 +297,36 @@ def _resolve_decisions_path(args, video: str) -> str:
     )
 
 
+def _prepare_ns3_cwd(args, ns3_root: str, shm_id: str):
+    """Per-cell working directory for ns-3 (see --ns3-cwd); None = run in the ns-3 root."""
+    mode = args.ns3_cwd
+    if mode == "repo":
+        return None
+    if mode == "auto":
+        tmp = os.environ.get("SLURM_TMPDIR")
+        if tmp and os.path.isdir(tmp):
+            cwd = os.path.join(tmp, "ns3_cwd_%s" % shm_id)
+        else:
+            video = _resolve_video_name(args)
+            cwd = os.path.join(os.path.dirname(_resolve_decisions_path(args, video)) or ".", "ns3_cwd")
+    else:
+        cwd = mode
+    cwd = os.path.abspath(cwd)
+    if cwd == ns3_root:
+        return None
+    os.makedirs(cwd, exist_ok=True)
+    for name in ("src", "contrib", "scratch", "build"):
+        link = os.path.join(cwd, name)
+        target = os.path.join(ns3_root, name)
+        if os.path.isdir(target) and not os.path.lexists(link):
+            os.symlink(target, link)
+    return cwd
+
+
 def main() -> None:
     args = parse_args()
     os.environ["WAF_CMD"] = "python3 ./waf"
+    ns3_root = os.path.abspath(".")
 
     # The policy (torch) runs in a separate Python 3.11 server; this process stays torch-free.
     # The server owns the metadata + scalers + model and answers one decision per request.
@@ -305,6 +342,11 @@ def main() -> None:
     seg, c2p, p2c, lock = (
         shm_prefix + "_seg", shm_prefix + "_c2p", shm_prefix + "_p2c", shm_prefix + "_lock")
     print("[Python] ns3-ai shm prefix (job-unique): %s" % shm_prefix, flush=True)
+    ns3_cwd = _prepare_ns3_cwd(args, ns3_root, shm_id)
+    if ns3_cwd is not None:
+        # waf runs the program (absolute binary path, LD_LIBRARY_PATH from the root) with this cwd.
+        os.environ["WAF_CMD"] = "python3 ./waf --cwd=%s" % shlex.quote(ns3_cwd)
+    print("[Python] ns-3 cwd: %s" % (ns3_cwd or ns3_root), flush=True)
 
     exp = Experiment(
         "ntn-iab-quic-dash-ai",

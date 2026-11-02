@@ -27,6 +27,12 @@
 set -uo pipefail
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONUNBUFFERED=1
 cd "${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
+# Node-local scratch for the per-cell ns-3 working directories (run_ai_dash_llm.py --ns3-cwd auto): Grex sets no
+# SLURM_TMPDIR, /scratch is a node-local disk. Removed at job end (~60 MB of trace files per cell).
+if [ -z "${SLURM_TMPDIR:-}" ] && [ -d /scratch ] && [ -w /scratch ]; then
+  export SLURM_TMPDIR="/scratch/$USER/slurm_${SLURM_JOB_ID:-$$}"
+  mkdir -p "$SLURM_TMPDIR" && trap 'rm -rf "$SLURM_TMPDIR"' EXIT TERM
+fi
 
 MATRIX="${MATRIX:?set MATRIX=<matrix csv>}"
 ROW_START="${ROW_START:-1}"

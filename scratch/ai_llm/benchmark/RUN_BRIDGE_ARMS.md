@@ -43,6 +43,17 @@ Every arm must run on a binary built from `fix/client-freeze` (merged into `feat
   faster (~12 s instead of ~100 s wall per simulated second). Disclose it as a simulation setting.
   `NS3_ATTRS=""` restores the per-slot design; with mobility or a channel update period the expiry must not
   exceed that period (20 ms SSB beam-management period). The worker banner prints `ns3_attrs=`.
+- **One ns-3 working directory per cell** (`run_ai_dash_llm.py --ns3-cwd auto`, the default since 2026-11-02):
+  ns-3 writes its trace files with fixed names (RlcAmBufferSize.txt, Ul/DlPdcpStats.txt, DashClientTx_Node_*.txt)
+  into its cwd. Running every cell in the repo root made all concurrent cells append to the same Lustre files
+  and serialise on their locks (2026-11-02: 250 cells cluster-wide -> every ns-3 blocked in write(), CPU arms
+  2x and the GPU val arm 6-8x slower). The launcher now runs ns-3 under `$SLURM_TMPDIR/ns3_cwd_<shm-id>`
+  (else `<decisions dir>/ns3_cwd`) with symlinks src/ contrib/ scratch/ build/ for the modules' relative data
+  reads; decisions are byte-identical to the repo-root run (smoke job 8145131). Nothing downstream reads those
+  trace files for bridge arms (scoring = decisions.jsonl + worker log). `--ns3-cwd repo` restores the old path.
+- **Phase F seed sets**: `bench_cpu_packed.sbatch` derives STEM from POLICY and ignores `STEM=`; pass
+  `OUT_ROOT=Quic_artifacts/Qmpc_s2 LOGDIR=logs_bench_qmpc_s2` (and `_s3`) so seed sets never share a dir with
+  re-run 2 (`score_bridge_arm.sh` renames run_<seed>_<rtag> -> run_<cond>, which would collide).
 - **Freeze gate after every arm**: `python3.11 scratch/ai_llm/benchmark/freeze_audit.py 'logs_bench_<stem>/task_*.log'`
   (native BOLA: `'Quic_artifacts/BolaFull/*/run_*/sim.log'`) must report 0 permanently frozen UEs; a handful
   of reconnects per cell is normal. The validation of the fixed binary on the six worst old-freeze cells is

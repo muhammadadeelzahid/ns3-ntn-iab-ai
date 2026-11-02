@@ -25,19 +25,20 @@ SEM=config/feature_scaler_semantic_clean.json
 : > "$OUT"
 
 run_eval() {  # <ckpt> <split>
-  local ck="$1" split="$2"
-  echo "##### ckpt=$ck split=$split" | tee -a "$OUT"
+  local ck="$1" split="$2" net=config/feature_scaler_network.json
+  case "$ck" in *hist*) net=config/feature_scaler_network_v3h.json;; esac   # 8-feature checkpoints
+  echo "##### ckpt=$ck split=$split net_scaler=$net" | tee -a "$OUT"
   python3 evaluate.py --checkpoint "$ck" --data-dir "$DATA/$split" --glob '*.jsonl' \
-    --semantic-scaler "$SEM" --network-scaler config/feature_scaler_network.json \
+    --semantic-scaler "$SEM" --network-scaler "$net" \
     --tag "$(basename "$(dirname "$ck")")/$(basename "$ck" .pt)/$split" 2>&1 \
     | grep -vE 'UserWarning|warnings.warn|Loading weights|deprecated' | tee -a "$OUT"
 }
 
-for lab in ${LABELS:-greedy k5estimate k5robust greedy_dag k5estimate_dag k5robust_dag}; do
+for lab in ${LABELS:-greedy k5estimate k5robust greedy_dag k5estimate_dag k5est_pf085_dag k5est_pf07_dag k5estimate_dag_hist}; do
   for s in 41 42 43; do
     ck="checkpoints_v3_$lab/abr_v2_seed$s.pt"; [ -f "$ck" ] || continue
     run_eval "$ck" merged_greedy/val
-    case "$lab" in k5*) run_eval "$ck" "merged_${lab%_dag}/val";; esac
+    case "$lab" in k5estimate_dag_hist) run_eval "$ck" "merged_k5estimate/val";; k5*) run_eval "$ck" "merged_${lab%_dag}/val";; esac
   done
 done
 echo "wrote $OUT"

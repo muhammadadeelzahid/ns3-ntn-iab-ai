@@ -140,3 +140,9 @@ commands above with `MODEL_STEM=AiDashClean` exported once Phase 4 is scored.
 # Live val check (52 cells): bench_model_packed.sbatch MATRIX=Quic_artifacts/val_matrix_guard.csv CKPT=... \
 #   OUT_ROOT=Quic_artifacts/ValV3_<lab> LOGDIR=logs_valv3_<lab> KPAR=6, two slices [1,26] [27,52];
 #   score: score_bridge_arm.sh ValV3_<lab> scratch/ai_llm/benchmark/val_videos_26.txt
+# Model v3 serving knobs (bench_model_packed.sbatch env -> run_ai_dash_llm.py -> inference_server.py):
+#   GUARD_STRICT_BELOW_S=8   : --guard-strict-below-s, no buffer spending below 8 s of buffer (item 5; default off)
+#   NETWORK_SCALER=scratch/ai_llm/config/feature_scaler_network_v3h.json : REQUIRED for checkpoints trained with the
+#     8-feature scaler (checkpoints_v3_*_hist; realized_throughput_bps derived in features.py); the default 7-name
+#     scaler would feed the model a 7-dim input. evaluate.py --network-scaler likewise (eval_v3_ckpts.slurm picks it by name).
+#   Teacher variants: relabel_lookahead.py --planning-factor 0.85|0.7 (item 3) -> train_jsonl_v3/merged_k5est_pf{085,07}_dag.

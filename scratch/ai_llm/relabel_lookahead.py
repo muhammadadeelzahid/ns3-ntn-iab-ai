@@ -10,6 +10,8 @@ dp_oracle; K=1 with the observed estimate == greedy_rung) and a causal throughpu
                   (teacher.throughput_bps_replay = what the replay scorer uses as realized throughput);
                   first row of a session falls back to the observed estimate.
   bw="estimate" : the row's observed throughput_estimate_bps (what greedy uses).
+  --planning-factor F (default 1.0) scales the predicted throughput before planning, i.e. a RobustMPC-style
+  conservative discount applied by the teacher (label name suffix "_pf<F>" when F != 1).
 
 Conventions copied from the greedy relabel (benchmark/rebuild_clean_dataset.py): rows grouped by
 (run_id, node_id), ordered by segment_id; buffer = the row's observed buffer; the switch penalty is taken
@@ -62,7 +64,7 @@ def _pos(pol: RobustMpcPolicy, row) -> int:
     raise KeyError("row %s seg %d does not match metadata ladder" % (row.get("video_name"), sid))
 
 
-def lookahead_labels(sess, cfg, horizon: int, bw: str):
+def lookahead_labels(sess, cfg, horizon: int, bw: str, pf: float = 1.0):
     """Labels for one ordered session (list of rows)."""
     pol = policy_for(sess[0]["video_name"], cfg, horizon)
     est = RobustThroughputEstimator()
@@ -76,7 +78,7 @@ def lookahead_labels(sess, cfg, horizon: int, bw: str):
             future = pred if pred else observed
         else:
             future = observed
-        future = max(future, 1e4)
+        future = max(future * pf, 1e4)
         combos, total = pol.horizon_rewards(_pos(pol, r), float(obs.get("buffer_level_s", 0.0)), future, prev)
         best = int((total >= total.max()).nonzero()[0][-1])
         rung = int(combos[best, 0])
@@ -127,7 +129,8 @@ def compare(data_dir, cfg, variants):
               (" %9.1f%%" % (100 * mean(agree[name])) if name in agree else " %10s" % "-"))
 
 
-def relabel(in_dir, out_dir, cfg, K, bw):
+def relabel(in_dir, out_dir, cfg, K, bw, pf=1.0):
+    tag = "lookahead_k%d_%s" % (K, bw) + ("" if pf == 1.0 else "_pf%g" % pf)
     os.makedirs(out_dir, exist_ok=True)
     for f in sorted(glob.glob(os.path.join(in_dir, "*.jsonl"))):
         rows = [json.loads(l) for l in open(f)]
@@ -136,10 +139,10 @@ def relabel(in_dir, out_dir, cfg, K, bw):
             by[(r.get("run_id"), r.get("node_id"))].append(r)
         for sess in by.values():
             sess.sort(key=lambda r: int(r.get("segment_id", 0)))
-            for r, lab in zip(sess, lookahead_labels(sess, cfg, K, bw)):
+            for r, lab in zip(sess, lookahead_labels(sess, cfg, K, bw, pf)):
                 t = r["teacher"]
                 t["greedy_chosen_bitrate_class"] = int(t["chosen_bitrate_class"])
-                t["name"] = "lookahead_k%d_%s" % (K, bw)
+                t["name"] = tag
                 t["chosen_bitrate_class"] = lab
                 t["oracle_bitrate_idx"] = lab
                 lv = LADDER_LEVELS[lab]
@@ -157,13 +160,14 @@ def main():
     ap.add_argument("--relabel", nargs=2, metavar=("IN", "OUT"))
     ap.add_argument("--horizon", type=int, default=5)
     ap.add_argument("--bw", choices=("robust", "estimate"), default="robust")
+    ap.add_argument("--planning-factor", type=float, default=1.0)
     ap.add_argument("--reward-config", default=None)
     args = ap.parse_args()
     cfg = load_reward_config(args.reward_config)
     if args.compare:
         compare(args.compare, cfg, [(1, "estimate"), (1, "robust"), (3, "robust"), (5, "robust"), (5, "estimate")])
     if args.relabel:
-        relabel(args.relabel[0], args.relabel[1], cfg, args.horizon, args.bw)
+        relabel(args.relabel[0], args.relabel[1], cfg, args.horizon, args.bw, args.planning_factor)
 
 
 if __name__ == "__main__":

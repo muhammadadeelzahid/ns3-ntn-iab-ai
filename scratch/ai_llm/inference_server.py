@@ -52,7 +52,7 @@ def _bps_to_rung(bps: float) -> int:
 
 
 def _feasible_rung(throughput_bps: float, segment_meta, safety: float,
-                   buffer_s: float, seg_dur_s: float) -> int:
+                   buffer_s: float, seg_dur_s: float, strict_below_s: float = 0.0) -> int:
     """Highest rung whose download won't underrun the buffer, given current throughput.
 
     Download time of rung r = actual_bitrate[r]*seg_dur / throughput. To avoid a stall it must finish
@@ -66,6 +66,11 @@ def _feasible_rung(throughput_bps: float, segment_meta, safety: float,
     really delivered - not the nominal ladder. Floor (0) if nothing fits.
     """
     head = max(buffer_s, seg_dur_s) / max(seg_dur_s, 1e-6)
+    if buffer_s < strict_below_s:
+        # Low-buffer strict mode (--guard-strict-below-s): no buffer spending, strictly sustainable rung.
+        # Re-run 2 / val diagnosis: 79 % of the 4.5 Mb/s stall followed decisions at 5-6 s of buffer that
+        # the proportional budget admitted; draining that buffer leaves nothing for the next segments.
+        head = 1.0
     budget = throughput_bps * head * safety
     r = 0
     for i, lvl in enumerate(LADDER_LEVELS):
@@ -127,6 +132,9 @@ def parse_args() -> argparse.Namespace:
     # stale 2-3.5 Mb/s average while the UE was getting ~1.5 Mb/s).
     ap.add_argument("--guard-estimator", choices=("avg", "robust"), default="avg",
                     help="Throughput estimate used by the no-stall guard (default avg = unchanged).")
+    ap.add_argument("--guard-strict-below-s", type=float, default=0.0,
+                    help="Below this buffer level (s) the guard allows no buffer spending (strictly "
+                         "sustainable rung). 0 = off (unchanged proportional budget).")
     return ap.parse_args()
 
 
@@ -292,7 +300,8 @@ def main() -> None:
                         thr = min(thr, robust_bps) if thr > 0.0 else robust_bps
                 if args.guard_safety > 0.0 and thr > 0.0:
                     chosen_rung = _bps_to_rung(chosen_bps)
-                    cap = _feasible_rung(thr, segment_meta, args.guard_safety, buf, args.guard_seg_dur_s)
+                    cap = _feasible_rung(thr, segment_meta, args.guard_safety, buf, args.guard_seg_dur_s,
+                                         args.guard_strict_below_s)
                     if chosen_rung > cap:
                         chosen_bps = float(NS3_RATE_LADDER_BPS[cap])
                         reason = "%s+guard(buf%.1f:r%d->r%d)" % (reason, buf, chosen_rung, cap)

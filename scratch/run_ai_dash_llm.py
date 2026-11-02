@@ -84,6 +84,8 @@ def _spawn_inference_server(args):
             cmd += ["--thr-safety", str(args.thr_safety)]
     if getattr(args, "guard_estimator", None):
         cmd += ["--guard-estimator", args.guard_estimator]
+    if getattr(args, "guard_strict_below_s", None):
+        cmd += ["--guard-strict-below-s", str(args.guard_strict_below_s)]
     if args.device:
         cmd += ["--device", args.device]
     if not args.use_missing_masks:
@@ -211,6 +213,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--guard-estimator", choices=("avg", "robust"), default=None,
                         help="Model arm: throughput estimate of the server's no-stall guard (default: server default avg).")
+    parser.add_argument("--guard-strict-below-s", type=float, default=None,
+                        help="Passed to inference_server --guard-strict-below-s (low-buffer strict guard).")
     parser.add_argument("--w-stall", type=float, default=None,
                         help="Override w_stall for --policy greedy.")
     parser.add_argument("--thr-safety", type=float, default=None,

@@ -63,7 +63,7 @@ DEVICE="${DEVICE:-cuda}"
 LOGDIR="${LOGDIR:-logs_bench}"
 mkdir -p "$LOGDIR"
 
-echo "=== packed worker: MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR ckpt=$CKPT numUes=$NUMUES simStop=$SIMSTOP cap=${SIM_STOP_CAP:-150} out=$OUT_ROOT logs=$LOGDIR sem_scaler=${SEMANTIC_SCALER:-default} guard=${GUARD_ESTIMATOR:-avg} ns3_attrs=${NS3_ATTRS:-none} ==="
+echo "=== packed worker: MATRIX=$MATRIX rows [$ROW_START,$ROW_END] KPAR=$KPAR ckpt=$CKPT numUes=$NUMUES simStop=$SIMSTOP cap=${SIM_STOP_CAP:-150} out=$OUT_ROOT logs=$LOGDIR sem_scaler=${SEMANTIC_SCALER:-default} guard=${GUARD_ESTIMATOR:-avg} strict_below=${GUARD_STRICT_BELOW_S:-0} ns3_attrs=${NS3_ATTRS:-none} ==="
 
 sim_stop_for() {  # <metadata csv> -> seconds (identical to bench_cpu_packed.sbatch / dash_trace_worker.slurm)
   if [ "$SIMSTOP" = "auto" ]; then
@@ -92,6 +92,7 @@ run_cell() {
     ${NETWORK_SCALER:+--network-scaler "$NETWORK_SCALER"} \
     ${SEMANTIC_SCALER:+--semantic-scaler "$SEMANTIC_SCALER"} \
     ${GUARD_ESTIMATOR:+--guard-estimator "$GUARD_ESTIMATOR"} \
+    ${GUARD_STRICT_BELOW_S:+--guard-strict-below-s "$GUARD_STRICT_BELOW_S"} \
     --shm-id "pack_${SLURM_JOB_ID}_${tid}" \
     "${link[@]}" "${attrs[@]}" --decisions-out "$out" \
     > "${LOGDIR}/task_${tid}_${video}_${rtag}_run${seed}.log" 2>&1

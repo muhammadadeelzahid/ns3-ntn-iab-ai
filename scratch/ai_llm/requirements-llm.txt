@@ -1,0 +1,27 @@
+# Dependencies for the LLM-backbone ABR variants (V1/V2).
+#
+# NOT needed for V0 (the no-LLM encoder baseline) — all transformers/peft imports in
+# model.py are lazy. Build a self-contained venv on Grex (the Alliance CCEnv/StdEnv module
+# stack currently errors with a "get_highest_supported_architecture" nil bug, so we avoid
+# it and use system python + a CUDA-bundled torch wheel):
+#
+#   /usr/bin/python3.11 -m venv ~/abr-llm-venv && source ~/abr-llm-venv/bin/activate
+#   pip install --upgrade pip
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements-llm.txt
+#
+# The cu124 wheel bundles its own CUDA 12.4 runtime, so no `module load cuda` is needed at
+# run time — only a recent enough GPU driver (the A30/agro and L40s/lgpu nodes qualify).
+# IMPORTANT: target an A30 (agro) or L40s (lgpu) node — the model uses bfloat16, which the
+# V100 (Volta) partitions do NOT support.
+
+transformers>=4.45        # Qwen2.5 support (Qwen2 architecture)
+peft>=0.13                # LoRA adapters
+accelerate>=0.34          # device placement / dtype handling for HF models
+sentencepiece             # tokenizer backend (needed once V3 adds real text tokens)
+scikit-learn>=1.3         # macro-F1 / per-class recall (train.py has a torch fallback)
+
+# Default adaptation is bf16 LoRA (frozen base in bf16 + LoRA) — fits Qwen2.5-1.5B on an A30
+# with room to spare, and needs NO bitsandbytes. Install bitsandbytes ONLY if you opt into
+# 4-bit QLoRA (sbatch QLORA=1); it pulls a heavy CUDA stack and is unnecessary at 1.5B:
+# bitsandbytes>=0.43

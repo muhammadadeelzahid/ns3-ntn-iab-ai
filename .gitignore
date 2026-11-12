@@ -27,7 +27,6 @@ simulation_results/*
 *.sh
 .venv
 scratch/ai_llm/checkpoints/
-scratch/ai_llm/slurm/
 scratch/ai_llm/__pycache__/
 
 [D|U]l[A-Z][a-z]*Stats.txt
@@ -74,10 +73,25 @@ eval_midstream_heldout/
 
 # paper manuscript (LaTeX sources, figures, build artifacts) — not tracked
 /latex-article/
-# all AI/LLM experiment code, diagrams, datasets, and outputs — not tracked
-scratch/ai_llm/
+# scratch/ai_llm: code, configs and video lists are tracked; experiment data, logs, notes and outputs are not
+scratch/ai_llm/*_logs/
+scratch/ai_llm/config_holdout/
+scratch/ai_llm/diagrams/
+/scratch/ai_llm/*.md
+scratch/ai_llm/benchmark/paper_*/
+scratch/ai_llm/benchmark/catalog_selection/stage_b_subset/
+scratch/ai_llm/benchmark/catalog_selection/proposed_additions.md
+__pycache__/
+*.pdf
+*.tex
+# one-off benchmark reports, IDE plans, third-party reference repos
+/benchmark_report_*.md
+.cursor/
+/reference_codes/
 # viewer run bundles (large; regenerate with scratch/ai_llm/export_viewer_bundle.py)
 viewer_bundles/
 viewer_bundles_portable/
 viewer_bundles_portable.tar
 viewer_bundles.tar
+/checkpoints_pensieve/
+docs/cluster-claude-handoff.md

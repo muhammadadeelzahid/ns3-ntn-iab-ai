@@ -1,0 +1,444 @@
+{
+  "_provenance": {
+    "boilerplate_tags_dropped": [
+      "4k",
+      "8k",
+      "benchmark",
+      "discovered",
+      "hd",
+      "pexels",
+      "standard",
+      "tier",
+      "uhd",
+      "video"
+    ],
+    "catalog": "/home/adeel/projects/def-ekram/adeel/abr/config/video_catalog.yaml",
+    "catalog_sha256": "9628bf971e26b4368d9f36c44bcd84d4fed62f5e863fa76361145fa4c916adf9",
+    "generated_utc": "2026-06-21T21:03:59.174429Z",
+    "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+    "n_videos": 105,
+    "template": "Content: {genre} scene. {scene}. Tags: {tags}."
+  },
+  "videos": {
+    "aerial_ocean_waves": {
+      "genre": "water",
+      "text": "Content: water scene. Aerial View of Waves. Tags: ocean, aerial."
+    },
+    "big_buck_bunny": {
+      "genre": "animation",
+      "text": "Content: animation scene. Big Buck Bunny (4K). Tags: blender, animation."
+    },
+    "chef_cooking": {
+      "genre": "food",
+      "text": "Content: food scene. A Chef Cooking Foods. Tags: food, cooking."
+    },
+    "city_night_traffic": {
+      "genre": "urban",
+      "text": "Content: urban scene. Night Traffic on Junction in City (4K). Tags: urban, night, high_motion."
+    },
+    "city_twilight_traffic": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial Cityscape at Twilight with Glowing Traffic (4K). Tags: urban, traffic."
+    },
+    "cooking_meat_pan": {
+      "genre": "food",
+      "text": "Content: food scene. Person Cracking an Egg on the Flour (4K). Tags: food, cooking."
+    },
+    "deer_fawn": {
+      "genre": "animals",
+      "text": "Content: animals scene. Deer Fawn on Grass. Tags: wildlife, animals."
+    },
+    "forest_pine": {
+      "genre": "nature",
+      "text": "Content: nature scene. Tall Pine Trees in a Green Forest. Tags: nature, forest."
+    },
+    "forest_sunlight": {
+      "genre": "nature",
+      "text": "Content: nature scene. Inside the Forest (4K). Tags: nature, forest, low_motion."
+    },
+    "hiking": {
+      "genre": "nature",
+      "text": "Content: nature scene. Scenic Hiking Adventure in Mountain Forest. Tags: nature, hiking."
+    },
+    "hiking_couple_climb": {
+      "genre": "nature",
+      "text": "Content: nature scene. Aerial Scenic View of Mallorca Mountains (4K). Tags: hiking, adventure, aerial."
+    },
+    "man_jogging_track": {
+      "genre": "sports",
+      "text": "Content: sports scene. Man Jogging on a Running Track. Tags: sports, fitness."
+    },
+    "ocean_waves_crash": {
+      "genre": "water",
+      "text": "Content: water scene. Big Wave Surfing at Waimea (4K). Tags: ocean, water, motion."
+    },
+    "peace_autumn_lake": {
+      "genre": "nature",
+      "text": "Content: nature scene. Peaceful Autumn Lake with Reflections (4K). Tags: nature, lake."
+    },
+    "people_dancing_party": {
+      "genre": "people",
+      "text": "Content: people scene. People Having Fun Dancing. Tags: people, dancing."
+    },
+    "pexels_18296909": {
+      "genre": "animals",
+      "text": "Content: animals scene. Eating zebra close up in badoca safari park in portugal. Tags: wildlife, animals."
+    },
+    "pexels_18446380": {
+      "genre": "nature",
+      "text": "Content: nature scene. Swedish woods. Tags: nature, forest."
+    },
+    "pexels_18757923": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Sharp epic breathtaking views of mountains in utah. Tags: mountain, aerial."
+    },
+    "pexels_19302786": {
+      "genre": "water",
+      "text": "Content: water scene. Aerial view of the ocean waves. Tags: ocean, waves."
+    },
+    "pexels_26608389": {
+      "genre": "water",
+      "text": "Content: water scene. Beach sunset waves. Tags: ocean, waves."
+    },
+    "pexels_27124801": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Aerial view of himalayas hindu kush and karakorum. Tags: mountain, aerial."
+    },
+    "pexels_27954333": {
+      "genre": "water",
+      "text": "Content: water scene. Waterfall in highlands of iceland. Tags: waterfall."
+    },
+    "pexels_27954334": {
+      "genre": "water",
+      "text": "Content: water scene. Icelandic waterfall. Tags: waterfall."
+    },
+    "pexels_27954335": {
+      "genre": "water",
+      "text": "Content: water scene. Waterfall in iceland. Tags: waterfall."
+    },
+    "pexels_28857129": {
+      "genre": "animals",
+      "text": "Content: animals scene. Meerkat observing in natural habitat. Tags: wildlife, animals."
+    },
+    "pexels_28887170": {
+      "genre": "urban",
+      "text": "Content: urban scene. Halifax aerial night view with city lights. Tags: city, night."
+    },
+    "pexels_28970099": {
+      "genre": "water",
+      "text": "Content: water scene. Aerial view of ocean waves crashing on rocks. Tags: ocean, waves."
+    },
+    "pexels_29078750": {
+      "genre": "water",
+      "text": "Content: water scene. Serene ocean waves on sandy beach. Tags: ocean, waves."
+    },
+    "pexels_29135845": {
+      "genre": "urban",
+      "text": "Content: urban scene. Stunning aerial night view of tirana cityscape. Tags: city, night."
+    },
+    "pexels_29136312": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Scenic aerial view of the albanian alps mountains. Tags: mountain, aerial."
+    },
+    "pexels_29167949": {
+      "genre": "nature",
+      "text": "Content: nature scene. Atmospheric drone footage of remote forest stream. Tags: nature, forest."
+    },
+    "pexels_29755631": {
+      "genre": "animals",
+      "text": "Content: animals scene. Adorable baby monkeys in natural habitat. Tags: wildlife, animals."
+    },
+    "pexels_30070091": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial nighttime cityscape with lights. Tags: city, night."
+    },
+    "pexels_30886101": {
+      "genre": "water",
+      "text": "Content: water scene. Aerial view of turquoise ocean waves. Tags: ocean, waves."
+    },
+    "pexels_30925760": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Aerial view of snowy mountain landscape at sunrise. Tags: mountain, aerial."
+    },
+    "pexels_30935167": {
+      "genre": "sports",
+      "text": "Content: sports scene. Aerial view of car passing track and trees. Tags: sports, running."
+    },
+    "pexels_31270039": {
+      "genre": "sports",
+      "text": "Content: sports scene. Dynamic track runner in action on a sunny day. Tags: sports, running."
+    },
+    "pexels_31691426": {
+      "genre": "animals",
+      "text": "Content: animals scene. Majestic tiger strolling in natural habitat. Tags: wildlife, animals."
+    },
+    "pexels_31928658": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Majestic aerial view of mountain range. Tags: mountain, aerial."
+    },
+    "pexels_31943740": {
+      "genre": "sports",
+      "text": "Content: sports scene. Morning run along scenic coastal path. Tags: sports, running."
+    },
+    "pexels_31990568": {
+      "genre": "sports",
+      "text": "Content: sports scene. Drone view of runners in misty forest trail. Tags: sports, running."
+    },
+    "pexels_32890912": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Stunning aerial view of alpine mountain range. Tags: mountain, aerial."
+    },
+    "pexels_33174015": {
+      "genre": "nature",
+      "text": "Content: nature scene. Aerial view of lush green forest and open fields. Tags: nature, forest."
+    },
+    "pexels_33237138": {
+      "genre": "nature",
+      "text": "Content: nature scene. Stunning aerial view of misty forest landscape. Tags: nature, forest."
+    },
+    "pexels_33312515": {
+      "genre": "water",
+      "text": "Content: water scene. Stunning aerial view of cox s bazar beach. Tags: ocean, waves."
+    },
+    "pexels_33846253": {
+      "genre": "water",
+      "text": "Content: water scene. Aerial view of ocean waves crashing on rocks. Tags: ocean, waves."
+    },
+    "pexels_33942487": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping city lights. Tags: city, night."
+    },
+    "pexels_34254266": {
+      "genre": "water",
+      "text": "Content: water scene. Stormy atlantic waves crashing on rocky coastline. Tags: ocean, waves."
+    },
+    "pexels_34365264": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping cityscape. Tags: city, night."
+    },
+    "pexels_34382886": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping city lights. Tags: city, night."
+    },
+    "pexels_34382887": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping cityscape. Tags: city, night."
+    },
+    "pexels_34406932": {
+      "genre": "water",
+      "text": "Content: water scene. Stunning autumn waterfall in scenic sweden. Tags: waterfall."
+    },
+    "pexels_34623325": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Stunning aerial view of mountain lake landscape. Tags: mountain, aerial."
+    },
+    "pexels_34658301": {
+      "genre": "urban",
+      "text": "Content: urban scene. Stunning aerial cityscape at night. Tags: city, night."
+    },
+    "pexels_34797065": {
+      "genre": "water",
+      "text": "Content: water scene. Serene ocean waves on a sunny beach. Tags: ocean, waves."
+    },
+    "pexels_34956048": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Scenic aerial view of snowy mountain peaks. Tags: mountain, aerial."
+    },
+    "pexels_35124890": {
+      "genre": "animals",
+      "text": "Content: animals scene. Playful hippo chewing on stick in water. Tags: wildlife, animals."
+    },
+    "pexels_35130580": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial view of jonkoping city at night. Tags: city, night."
+    },
+    "pexels_35132716": {
+      "genre": "nature",
+      "text": "Content: nature scene. Serene aerial view of expansive green forest. Tags: nature, forest."
+    },
+    "pexels_35139203": {
+      "genre": "nature",
+      "text": "Content: nature scene. Aerial view of autumn swiss alps. Tags: nature, forest."
+    },
+    "pexels_35147460": {
+      "genre": "nature",
+      "text": "Content: nature scene. Aerial view of monochrome nordic forest. Tags: nature, forest."
+    },
+    "pexels_35172620": {
+      "genre": "urban",
+      "text": "Content: urban scene. Majestic aerial night view of jonkoping cityscape. Tags: city, night."
+    },
+    "pexels_35172623": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping cityscape. Tags: city, night."
+    },
+    "pexels_35224011": {
+      "genre": "water",
+      "text": "Content: water scene. Turkish flag amidst powerful ocean waves. Tags: ocean, waves."
+    },
+    "pexels_35224016": {
+      "genre": "water",
+      "text": "Content: water scene. Aerial view of turkish flag amidst ocean waves. Tags: ocean, waves."
+    },
+    "pexels_35249508": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping cityscape. Tags: city, night."
+    },
+    "pexels_35282256": {
+      "genre": "urban",
+      "text": "Content: urban scene. Aerial night view of jonkoping cityscape. Tags: city, night."
+    },
+    "pexels_35573591": {
+      "genre": "nature",
+      "text": "Content: nature scene. Misty blue forest under cloudy sky. Tags: nature, forest."
+    },
+    "pexels_35655927": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Breathtaking drone view of misty french alps. Tags: mountain, aerial."
+    },
+    "pexels_35742076": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Breathtaking aerial view of snow capped andes. Tags: mountain, aerial."
+    },
+    "pexels_35742078": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Majestic drone view of snowy mountain landscapes. Tags: mountain, aerial."
+    },
+    "pexels_36168381": {
+      "genre": "animals",
+      "text": "Content: animals scene. Majestic deer grazing on snowy field at sunrise. Tags: wildlife, animals."
+    },
+    "pexels_36505810": {
+      "genre": "water",
+      "text": "Content: water scene. Dramatic drone view of north sea cliffs. Tags: ocean, waves."
+    },
+    "pexels_36505987": {
+      "genre": "sports",
+      "text": "Content: sports scene. Aerial shot of trail runner on rural path. Tags: sports, running."
+    },
+    "pexels_36592090": {
+      "genre": "water",
+      "text": "Content: water scene. Serene waterfall in rocky gorge timelapse. Tags: waterfall."
+    },
+    "pexels_37029740": {
+      "genre": "water",
+      "text": "Content: water scene. Dynamic ocean waves crashing on rocky shore. Tags: ocean, waves."
+    },
+    "pexels_37116275": {
+      "genre": "animals",
+      "text": "Content: animals scene. Young antelope feeding in natural habitat. Tags: wildlife, animals."
+    },
+    "pexels_37187238": {
+      "genre": "animals",
+      "text": "Content: animals scene. Playful ring tailed lemurs in natural habitat. Tags: wildlife, animals."
+    },
+    "pexels_37243803": {
+      "genre": "animals",
+      "text": "Content: animals scene. Peaceful deer grazing in lush forest setting. Tags: wildlife, animals."
+    },
+    "pexels_37963722": {
+      "genre": "water",
+      "text": "Content: water scene. Serene cascade waterfall in lush green hills. Tags: waterfall."
+    },
+    "pexels_37984243": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Stunning sunset over majestic mountain range. Tags: mountain, aerial."
+    },
+    "pexels_37984252": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Aerial view of mountainous landscape at dusk. Tags: mountain, aerial."
+    },
+    "pexels_37984564": {
+      "genre": "mountain",
+      "text": "Content: mountain scene. Aerial view of sunlit mountain range. Tags: mountain, aerial."
+    },
+    "pexels_4065567": {
+      "genre": "sports",
+      "text": "Content: sports scene. A person running using the treadmill. Tags: sports, running."
+    },
+    "pexels_4945121": {
+      "genre": "sports",
+      "text": "Content: sports scene. Person running on a treadmill. Tags: sports, running."
+    },
+    "pexels_4994624": {
+      "genre": "sports",
+      "text": "Content: sports scene. Woman running in slow motion. Tags: sports, running."
+    },
+    "pexels_5061401": {
+      "genre": "water",
+      "text": "Content: water scene. High angle video shot of tourists at waterfall. Tags: waterfall."
+    },
+    "pexels_5257861": {
+      "genre": "water",
+      "text": "Content: water scene. Waterfalls in a forest. Tags: waterfall."
+    },
+    "pexels_5632725": {
+      "genre": "water",
+      "text": "Content: water scene. A flowing waterfalls from natural rock formation. Tags: waterfall."
+    },
+    "pexels_5746459": {
+      "genre": "water",
+      "text": "Content: water scene. Waterfalls in the river. Tags: waterfall."
+    },
+    "pexels_6085785": {
+      "genre": "water",
+      "text": "Content: water scene. Waterfalls in the forest. Tags: waterfall."
+    },
+    "pexels_7062129": {
+      "genre": "sports",
+      "text": "Content: sports scene. A man running and doing parkour. Tags: sports, running."
+    },
+    "pexels_7478080": {
+      "genre": "water",
+      "text": "Content: water scene. Waves at the sea. Tags: ocean, waves."
+    },
+    "pexels_8520307": {
+      "genre": "sports",
+      "text": "Content: sports scene. Woman stretching his body. Tags: sports, running."
+    },
+    "pexels_8691728": {
+      "genre": "sports",
+      "text": "Content: sports scene. Two women are running on a track. Tags: sports, running."
+    },
+    "rain_drops_roof": {
+      "genre": "weather",
+      "text": "Content: weather scene. Raining in Forest (4K). Tags: weather, rain, forest."
+    },
+    "rome_night_aerial": {
+      "genre": "urban",
+      "text": "Content: urban scene. Stunning Aerial View of Rome at Night (4K). Tags: urban, night."
+    },
+    "sea_turtle_underwater": {
+      "genre": "water",
+      "text": "Content: water scene. Majestic Sea Turtle Gliding Underwater. Tags: underwater, wildlife."
+    },
+    "sintel": {
+      "genre": "animation",
+      "text": "Content: animation scene. Trippy Psychedelic Animation (4K stand-in for Sintel). Tags: animation, high_motion."
+    },
+    "storm_clouds_mountain": {
+      "genre": "weather",
+      "text": "Content: weather scene. Dramatic Storm Clouds over Mountain Landscape. Tags: weather, storm."
+    },
+    "sunset_city_clouds": {
+      "genre": "nature",
+      "text": "Content: nature scene. Sunset over a City with Clouds. Tags: sunset, city."
+    },
+    "tears_of_steel": {
+      "genre": "animation",
+      "text": "Content: animation scene. Tears of Steel (4K). Tags: blender, live_action, vfx."
+    },
+    "waterfall_forest": {
+      "genre": "nature",
+      "text": "Content: nature scene. Majestic Waterfalls in Lush Green Forest (4K). Tags: nature, water, motion."
+    },
+    "wildlife_koala_4k": {
+      "genre": "animals",
+      "text": "Content: animals scene. Relaxed Koala in Native Habitat (4K). Tags: wildlife, animals."
+    },
+    "zebra_slowmo": {
+      "genre": "animals",
+      "text": "Content: animals scene. Giraffe Strolling Gracefully in Savannah (4K). Tags: wildlife, animals."
+    }
+  }
+}

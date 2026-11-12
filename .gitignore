@@ -84,9 +84,10 @@ scratch/ai_llm/benchmark/catalog_selection/proposed_additions.md
 __pycache__/
 *.pdf
 *.tex
-# one-off benchmark reports, IDE plans, third-party reference repos
+# one-off benchmark reports, editor config folders, third-party reference repos
 /benchmark_report_*.md
 .cursor/
+.claude/
 /reference_codes/
 # viewer run bundles (large; regenerate with scratch/ai_llm/export_viewer_bundle.py)
 viewer_bundles/

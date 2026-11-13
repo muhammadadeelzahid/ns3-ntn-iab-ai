@@ -90,8 +90,7 @@ sbatch dp_oracle.slurm
 
 - **Muhammad Adeel Zahid** (`adeel.m.zahid@gmail.com`)
 - **WiCoNS Research Group** (University of Manitoba): [website](https://home.cc.umanitoba.ca/~hossaina/wicons/index.html)
-- **Advancing LEO Satellite Networks and Systems Group** (University of Manitoba): [website](https://home.cc.umanitoba.ca/~hup2/ntn/)
-- **Advanced Network and Embedded Systems (ANES)** (University of Manitoba)
+- **Advanced Network and Embedded Systems Lab** (University of Manitoba): [website](https://home.cc.umanitoba.ca/~hup2/ntn/)
 
 ## License
 

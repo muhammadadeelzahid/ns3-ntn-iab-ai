@@ -1026,6 +1026,11 @@ QuicSocketBase::SendPendingData (bool withAck)
 {
   NS_LOG_FUNCTION (this << withAck);
 
+  if (m_immediateClose)
+    {
+      return false;
+    }
+
   if (m_txBuffer->AppSize () == 0)
     {
       if (m_closeOnEmpty)
@@ -1150,8 +1155,14 @@ QuicSocketBase::SendPendingData (bool withAck)
                                     << " MaxPacketSize " << GetSegSize ());
 
         NS_LOG_INFO ("on path " << sendingPathId << " SN " << next);
-        // uint32_t sz =
-        SendDataPacket (next, s, withAck, sendingPathId);
+        uint32_t sz = SendDataPacket (next, s, withAck, sendingPathId);
+        if (sz == 0 || sz == static_cast<uint32_t> (-1))
+          {
+            // Nothing could be sent (no frame fits the window, socket draining/closed): stop instead of
+            // spinning. With m_closeOnEmpty the silly-window guard above is skipped and the old loop came
+            // straight back through a zero-length pacing timer at the same timestamp (frozen clock).
+            break;
+          }
 
         win = AvailableWindow (sendingPathId);
         connWin = ConnectionWindow (sendingPathId);
@@ -1270,6 +1281,10 @@ void
 QuicSocketBase::SendAck (uint8_t pathId)
 {
   NS_LOG_FUNCTION (this);
+  if (m_immediateClose)
+    {
+      return;
+    }
   m_subflows[pathId]->m_delAckEvent.Cancel ();
   m_subflows[pathId]->m_sendAckEvent.Cancel ();
   m_subflows[pathId]->m_queue_ack = false;
@@ -1360,7 +1375,7 @@ QuicSocketBase::SendDataPacket (SequenceNumber32 packetNumber, uint32_t maxSize,
   if (m_subflows[pathId]->m_tcb->m_pacing)
     {
       NS_LOG_DEBUG ("Pacing is enabled");
-      if (m_pacingTimer.IsExpired ())
+      if (m_pacingTimer.IsExpired () && sz > 0)   // sz == 0: nothing on the wire, no zero-delay re-entry
         {
           NS_LOG_DEBUG ("Current Pacing Rate " << m_subflows[pathId]->m_tcb->m_pacingRate);
           NS_LOG_DEBUG ("Pacing Timer is in expired state, activate it. Expires in " <<
@@ -1374,12 +1389,18 @@ QuicSocketBase::SendDataPacket (SequenceNumber32 packetNumber, uint32_t maxSize,
     }
 
   bool isAckOnly = ((sz == 0) & (withAck));
-
-
+  // Append the ACK frame to a COPY of the packet. `p` is the tx buffer's own sent-list item
+  // (NextSequence returns outItem->m_packet by pointer), so appending in place polluted the stored,
+  // retransmittable payload with the ACK frame: a lost packet was retransmitted WITH its stale ACK
+  // frame and got a fresh one appended again, growing by one ACK frame per loss round while the
+  // buffer's size accounting (m_sentSize / m_appSize) underflowed. Observed in the DASH benchmark as
+  // a 3.9 MB "lost" packet on a client that only ever sends ~20-byte requests: either a permanently
+  // stuck connection (inflight > window) or an uplink storm that froze the simulation.
+  Ptr<Packet> wire = p;
   if (withAck && !m_subflows[pathId]->m_receivedPacketNumbers.empty ())
     {
-      p->AddAtEnd (OnSendingAckFrame (pathId));
-
+      wire = p->Copy ();
+      wire->AddAtEnd (OnSendingAckFrame (pathId));
     }
 
 
@@ -1430,8 +1451,8 @@ QuicSocketBase::SendDataPacket (SequenceNumber32 packetNumber, uint32_t maxSize,
 
   head.SetPathId(pathId);
   // m_subflows[pathId]->Add(packetNumber);
-  m_quicl4->SendPacket (this, p, head);
-  m_txTrace (p, head, this);
+  m_quicl4->SendPacket (this, wire, head);
+  m_txTrace (wire, head, this);
   NotifyDataSent (sz);
 
   m_txBuffer->UpdatePacketSent (packetNumber, sz, pathId, m_subflows[pathId]->m_tcb);
@@ -1516,6 +1537,9 @@ QuicSocketBase::SetReTxTimeout (uint8_t pathId)
     }
   NS_LOG_INFO ("Schedule ReTxTimeout at time " << Simulator::Now ().GetSeconds () << " to expire at time " << (Simulator::Now () + alarmDuration).GetSeconds ());
   NS_LOG_INFO ("Alarm after " << alarmDuration.GetSeconds () << " seconds");
+  // Re-arming replaces the pending alarm. The old code left every previous alarm scheduled; one firing after
+  // the current trigger time ran ReTxTimeout spuriously (extra TLP/RTO probes) and they piled up per packet.
+  m_subflows[pathId]->m_tcb->m_lossDetectionAlarm.Cancel ();
   // pass pathId to &QuicSocketBase::ReTxTimeout
   m_subflows[pathId]->m_tcb->m_lossDetectionAlarm = Simulator::Schedule (alarmDuration, &QuicSocketBase::ReTxTimeout, this, pathId);
   m_subflows[pathId]->m_tcb->m_nextAlarmTrigger = Simulator::Now () + alarmDuration;
@@ -1525,6 +1549,10 @@ void
 QuicSocketBase::DoRetransmit (std::vector<Ptr<QuicSocketTxItem> > lostPackets, uint8_t pathId)
 {
   NS_LOG_FUNCTION (this);
+  if (m_immediateClose)
+    {
+      return;
+    }
   
   // Get packets to retransmit
   SequenceNumber32 next = ++m_subflows[pathId]->m_tcb->m_nextTxSequence;
@@ -1549,14 +1577,27 @@ QuicSocketBase::DoRetransmit (std::vector<Ptr<QuicSocketTxItem> > lostPackets, u
                        pathId);
   }
 
-  // Send the retransmitted data
+  // Send the retransmitted data: at most ONE MTU-sized packet here. Retransmission () re-queued every lost
+  // item at the head of the scheduler; the old call passed the TOTAL lost size as the packet size, so a loss
+  // burst came back as a single QUIC packet (3.9 MB in the DASH benchmark core dump). Anything above 65,507 B
+  // is rejected by the UDP socket (QuicL4Protocol ignores the return value), was never acknowledged and was
+  // resent on every ACK. The remaining re-queued data leaves through SendPendingData under the usual
+  // window/pacing rules.
   NS_LOG_INFO ("Retransmitted packet, next sequence number " << m_subflows[pathId]->m_tcb->m_nextTxSequence);
-  SendDataPacket (next, toRetx, m_connected,pathId);
+  SendDataPacket (next, std::min (toRetx, GetSegSize ()), m_connected, pathId);
+  if (m_txBuffer->AppSize () > 0)
+    {
+      SendPendingData (m_connected);
+    }
 }
 
 void
 QuicSocketBase::ReTxTimeout (uint8_t pathId)
 {
+  if (m_immediateClose)
+    {
+      return;
+    }
   if (Simulator::Now () < m_subflows[pathId]->m_tcb->m_nextAlarmTrigger)
     {
       NS_LOG_INFO ("Canceled alarm");
@@ -1750,6 +1791,44 @@ QuicSocketBase::RecvFrom (uint32_t maxSize, uint32_t flags, Address &fromAddress
 }
 
 void
+QuicSocketBase::ImmediateClose (bool sendClose)
+{
+  NS_LOG_FUNCTION (this << sendClose);
+  m_immediateClose = true;
+  m_closeOnEmpty = false;
+  m_appCloseSentListNoEmpty = false;
+  m_sendPendingDataEvent.Cancel ();
+  m_retxEvent.Cancel ();
+  m_idleTimeoutEvent.Cancel ();
+  m_sendAckEvent.Cancel ();
+  m_delAckEvent.Cancel ();
+  m_pacingTimer.Cancel ();
+  for (auto &sf : m_subflows)
+    {
+      if (!sf)
+        {
+          continue;
+        }
+      sf->m_sendPendingDataEvent.Cancel ();
+      sf->m_retxEvent.Cancel ();
+      sf->m_idleTimeoutEvent.Cancel ();
+      sf->m_sendAckEvent.Cancel ();
+      sf->m_delAckEvent.Cancel ();
+      if (sf->m_tcb)
+        {
+          sf->m_tcb->m_lossDetectionAlarm.Cancel ();
+        }
+    }
+  SetState (CLOSING);
+  m_drainingPeriodEvent.Cancel ();
+  m_drainingPeriodEvent = Simulator::Schedule (m_drainingPeriodTimeout, &QuicSocketBase::DoClose, this);
+  if (sendClose && !m_subflows.empty () && m_subflows[0])
+    {
+      SendConnectionClosePacket (0, "Immediate close");
+    }
+}
+
+void
 QuicSocketBase::ScheduleCloseAndSendConnectionClosePacket ()
 {
   m_drainingPeriodEvent.Cancel ();
@@ -1768,36 +1847,20 @@ QuicSocketBase::Close (void)
   // std::cout << this << " Close at time " << Simulator::Now ().GetSeconds ()<<std::endl;
   m_receivedTransportParameters = false;
 
+  // The applications in this repository call Close() only to ABANDON a connection (DashClient dead-segment
+  // recovery / connect watchdog) or at StopApplication. The original graceful path kept transmitting the
+  // whole tx buffer (FlushOnClose) or did nothing at all while the sent list was non-empty, so every
+  // abandoned DASH connection stayed a full-rate zombie flow on the bottleneck and the server kept sending
+  // the abandoned segment. Close is therefore an RFC 9000 immediate close.
   if (m_idleTimeoutEvent.IsRunning () and m_socketState != IDLE
-      and m_socketState != CLOSING)   //Connection Close from application signal
+      and m_socketState != CLOSING and m_socketState != LISTENING)   //Connection Close from application signal
     {
-      bool sentListEmpty = m_txBuffer->SentListIsEmpty();
-      
-      if(!sentListEmpty) {
-        m_appCloseSentListNoEmpty = true;
-      } else {
-        m_appCloseSentListNoEmpty = false;
-        SetState (CLOSING);
-        if (m_flushOnClose)
-          {
-            m_closeOnEmpty = true;
-          }
-        else
-          {
-            ScheduleCloseAndSendConnectionClosePacket ();
-          }
-      } 
+      ImmediateClose (m_socketState == OPEN);
     }
   else if (m_idleTimeoutEvent.IsExpired () and m_socketState != CLOSING
-           and m_socketState != IDLE and m_socketState != LISTENING) //Connection Close due to Idle Period termination
+           and m_socketState != IDLE and m_socketState != LISTENING) //Idle timeout, or app close before the handshake
     {
-      SetState (CLOSING);
-      m_drainingPeriodEvent.Cancel ();
-      NS_LOG_LOGIC (
-        this << " Close Schedule DoClose at time " << Simulator::Now ().GetSeconds () << " to expire at time " << (Simulator::Now () + m_drainingPeriodTimeout.Get ()).GetSeconds ());
-      m_drainingPeriodEvent = Simulator::Schedule (m_drainingPeriodTimeout,
-                                                   &QuicSocketBase::DoClose,
-                                                   this);
+      ImmediateClose (false);
     }
   else if (m_idleTimeoutEvent.IsExpired ()
            and m_drainingPeriodEvent.IsExpired () and m_socketState != CLOSING
@@ -2204,7 +2267,13 @@ QuicSocketBase::OnReceivedFrame (QuicSubheader &sub)
 
       case QuicSubheader::CONNECTION_CLOSE:
         NS_LOG_INFO ("Received CONNECTION_CLOSE frame");
-        Close ();
+        // Peer is gone: stop sending at once (draining). Close() would keep flushing the tx buffer.
+        if (!m_immediateClose)
+          {
+            m_peerClosed = true;
+            ImmediateClose (false);
+            NotifyNormalClose ();
+          }
         break;
 
       case QuicSubheader::APPLICATION_CLOSE:
@@ -2429,10 +2498,14 @@ QuicSocketBase::OnReceivedAckFrame (QuicSubheader &sub)
       if (m_subflows[pathId]->m_tcb->m_largestSentBeforeRto.GetValue () < largestAcknowledged)
         {
 
-          uint32_t newPackets = (largestAcknowledged
-                                 - m_subflows[pathId]->m_tcb->m_largestSentBeforeRto.GetValue ()) / GetSegSize ();
+          // The RTO is verified: every packet sent before it is lost (draft-ietf-quic-recovery
+          // OnRetransmissionTimeoutVerified). The old code derived the number of post-RTO packets to KEEP as a
+          // packet-number difference divided by the segment size in BYTES (0 unless >1500 packets apart) and
+          // never cleared m_rtoCount on this path, so every later ACK marked every unacknowledged packet lost
+          // again - including the ones sent microseconds earlier - and resent all of them: the endless
+          // retransmit-everything loop behind the DASH benchmark "storm". Mark the pre-RTO packets, once.
           uint32_t inFlightBeforeRto = m_txBuffer->BytesInFlight (pathId);
-          m_txBuffer->ResetSentList (pathId, newPackets);
+          m_txBuffer->MarkLostUpTo (pathId, m_subflows[pathId]->m_tcb->m_largestSentBeforeRto);
           std::vector<Ptr<QuicSocketTxItem> > lostPackets =
             m_txBuffer->DetectLostPackets (pathId);
           if (m_quicCongestionControlLegacy && !lostPackets.empty ())
@@ -2446,11 +2519,16 @@ QuicSocketBase::OnReceivedAckFrame (QuicSubheader &sub)
               m_congestionControl->CongestionStateSet (
                 m_subflows[pathId]->m_tcb, TcpSocketState::CA_LOSS);
             }
+          else if (!m_quicCongestionControlLegacy)
+            {
+              // Same as QuicCongestionOps/QuicBbr::OnRetransmissionTimeoutVerified (protected): loss state.
+              m_subflows[pathId]->m_tcb->m_cWnd = m_subflows[pathId]->m_tcb->m_kMinimumWindow;
+              m_subflows[pathId]->m_tcb->m_congState = TcpSocketState::CA_LOSS;
+              m_congestionControl->CongestionStateSet (m_subflows[pathId]->m_tcb, TcpSocketState::CA_LOSS);
+            }
         }
-      else
-        {
-          m_subflows[pathId]->m_tcb->m_rtoCount = 0;
-        }
+      // Any ACK ends the RTO episode (draft-ietf-quic-recovery OnAckReceived: rto_count = 0 unconditionally).
+      m_subflows[pathId]->m_tcb->m_rtoCount = 0;
     }
 
   // Tail loss probe packet acknowledged - IETF Draft QUIC Recovery, Sec. 4.3.2
@@ -2976,6 +3054,10 @@ QuicSocketBase::ReceivedData (Ptr<Packet> p, const QuicHeader& quicHeader,
     }
   else if (m_socketState == CLOSING)
     {
+      if (m_peerClosed)
+        {
+          return; // draining: never answer the peer
+        }
       AbortConnection (m_transportErrorCode,
                        "Received packet in Closing state");
     }

@@ -55,6 +55,13 @@ HttpParser::SetApp(DashClient* app)
 }
 
 void
+HttpParser::Reset()
+{
+    m_pending_packet = nullptr;
+    m_pending_message_size = 0;
+}
+
+void
 HttpParser::ReadSocket(Ptr<Socket> socket)
 {
     NS_LOG_FUNCTION(this << socket);

@@ -1,0 +1,255 @@
+# OJ-COMS Submission Readiness Plan
+
+Target: **IEEE Open Journal of the Communications Society** (open-access, rigorous peer review).
+Paper: *Content-Aware ABR Streaming with a Small Language Model over Satellite 5G IAB Networks*
+(`latex-article/slm_abr.tex`).
+
+## Guardrails (non-destructive — applies to every phase)
+- **Never overwrite; always archive.** Corrupt-VMAF results, current checkpoints, and the current
+  paper stay as `*_prevmaf` / `*_v<n>` / archived dirs so we can diff old vs new.
+- **Branch per phase** off `feat/pensieve-benchmark` (e.g. `fix/vmaf-alignment`); merge when validated.
+- **Commit at the end of every phase**; large binaries (tars, checkpoints, media) go to a release/
+  archive location or `.gitignore`, never bloated into git history.
+- No new ns-3 sims or retraining happen until the data-integrity fixes land (Phases 1–2 gate 3–8).
+
+## Readiness assessment (why this plan, not just polishing)
+A journal reviewer will scrutinize correctness. Current blockers, in priority order:
+1. **VMAF corrupt on 6/10 benchmark videos** — it is the eval metric AND a model input AND the
+   teacher-label basis AND the video-selection key. Disqualifying if found.
+2. **Permanent-freeze rebuffering booked as 0 s** for the LLM arm (decisions.jsonl finalizes stall
+   only on resume). Distorts the QoE/congestion story.
+3. **Statistical significance** — Ours vs Pensieve currently p=0.07 (not significant at 0.05).
+4. **No content-aware baseline** — Ours is the only content+network policy; the content claim is
+   hedged. A reviewer will ask for a content-aware comparator.
+5. **Reproducibility** — the entire `scratch/ai_llm/` code tree is git-ignored (untracked).
+
+---
+
+## Phase 0 — Preserve & version-control current state (do first)
+- Commit tracked edits (`.gitignore`, `scratch/run_ai_dash_llm.py`) + `docs/` (incl. this plan).
+- `.gitignore` the large regenerable artifacts (`viewer_bundles.tar`, bundle dirs); record their
+  build command instead.
+- **Decide code-tracking for `scratch/ai_llm/`**: force-add the *source* (`*.py`, `*.md`, `config/*.json`,
+  `benchmark/`, `pensieve/`, `slurm/`) while keeping checkpoints/data/shards ignored. This is the
+  single most important reproducibility fix. (Needs a careful `git add -f` with an explicit include
+  list so no large binaries slip in.)
+- Decide checkpoint storage: `checkpoints_*` → an archive dir or IEEE DataPort/Zenodo release, with a
+  manifest in-repo (hashes + provenance), not raw binaries in git.
+- **Commit:** "chore: preserve viewer bundle exporter, docs, and OJ-COMS plan; track ai_llm source".
+
+## Phase 1 — Fix data-integrity blockers (GATING)
+**EXECUTED 2026-10-26 (cheap path):** full re-investigation confirmed the VMAF bug = 32/242 catalog
+videos (test 4/26, val 5/26, train 20/128; 3 of the paper's 10) whose six rung encodes were
+copy-segmented with a merged 4 s first segment vs the 2 s `original`, offsetting the VMAF reference and
+semantic frames by one segment. Fix applied: `abr/scripts/realign_original.py` re-splits `original`
+onto the rung timeline (rung media untouched, `*_prealign` archived, argmax-over-offset verified);
+all 32 aligned (abr commit ccdb313). Recompute of frames→VMAF→semantic→metadata for the 32 running as
+`abr/realign_affected.slurm` job 8124852 (task 1 big_buck_bunny COMPLETED + published: top-rung VMAF median 6.2→95.8, 59/59 monotonic, sizes unchanged) — the 30 unstarted tasks were moved to the `skylake` CPU partition as job 8125596 (`realign_affected_cpu.slurm`, 12 concurrent) because the GPU partition freed only one slot. The stall fix (`extract_true_stall.true_stall_per_ue`) and
+the 2.0 s segment-size fix landed in ns3 commit 49a51c9. **PHASE 1 COMPLETE (2026-10-26):** recompute job finished 32/32 (one OOM in `_03` fixed by capping `ProcessPoolExecutor` to SLURM_CPUS_PER_TASK, abr 3422840, task requeued). Final scan: top-rung VMAF median across the 32 videos **9.5 → 94.0**, all 32 monotonic across every rung, all 32 segment sizes byte-identical to `*.prealign.csv` (rung media untouched). Two videos remain <55 (pexels_35124890 48, pexels_6823730 47) — genuinely hard content whose encode PSNR is 30–35 dB; argmax-aligned, not a bug. Viewer bundles + `viewer_bundles.tar` regenerated with corrected VMAF. **Segment size DECISION (2026-10-26): REVERTED to 3.3 s** (ns3 commit after 49a51c9). All traces, teacher labels, checkpoints and benchmarks were produced in a self-consistent 3.3 s world; 2.0 s would need an ns-3 rebuild + full trace re-collection + retrain and invalidate every result. The 3.3 s playout vs 2.0 s encoded bytes = **0.606 × nominal effective per-rung demand, uniform across arms** — a modeling constant to DISCLOSE (Phase 6), not a comparison bias. Source == built binary, so **no rebuild**. Next: Phase 2 (relabel existing 3.3 s traces on corrected VMAF → refit scalers → retrain).
+
+Branch `fix/vmaf-alignment` + `fix/stall-accounting`.
+- **VMAF:** root cause = per-segment temporal offset between encoded and "original" segments (matching
+  frame counts, shifted window) in abr `_04_compute_quality_metrics.py`. Fix the segment alignment
+  (verify with a known-good clip: motion-heavy segment VMAF should be high at high rungs), recompute
+  VMAF for all affected videos, rebuild `output/metadata/*.csv` (archive old as `*_prevmaf`).
+- **Stall:** fix `extract_true_stall.py` model path to use the ns-3 `FinalizeInterruptionTime`
+  "Updated" value (terminal freeze) instead of `decisions.jsonl` `interruption_time_s`; distinguish
+  genuine mid-content freeze from end-of-content idle (played < segment_count).
+- **Validate:** re-run the VMAF-health scan (expect >55 median, monotonic) and the freeze audit
+  (expect frozen UEs now carry real rebuffer).
+- **Commit** each fix with before/after numbers.
+
+## Phase 2 — Rebuild the pipeline on clean data
+- Recompute `quality_sensitivity` + semantic features (depend on VMAF); refit feature scalers
+  (archive old).
+- Re-derive teacher labels (DP/greedy) on corrected VMAF, using the EXISTING 3.3 s traces (they are self-consistent with the 3.3 s player/oracle — no ns-3 trace re-collection, no rebuild).
+- **Keep the held-out split fixed; evaluate on the FULL test set (26 videos), not the shrunk 10.**
+  The 10-video shrink was for lgpu wall-time and cherry-picked by corrupt-VMAF headroom — running all
+  26 removes that sub-selection bias. Recompute per-video headroom on clean VMAF for binning/reporting
+  only (not re-selection).
+- **Retrain the LLM** (offline imitation, documented budget) on the clean dataset → new
+  `checkpoints_clean/`. Keep the old checkpoint archived for the record.
+- **Commit:** "feat: rebuild dataset + retrain on corrected VMAF (clean pipeline)".
+
+**PHASE 2 PROGRESS (2026-10-26):** served model = `checkpoints_bola_down/abr_v2_seed4{1,2,3}.pt`
+(trained 2026-07-06 on `train_jsonl_bola_down`: BOLA traces, greedy down-only teacher, window=4,
+soft_tokens=4, missing masks, 50 epochs, ~1h22 on lgpu each). The ns-3 traces are untouched by the
+realign fix (sizes byte-identical), so no re-collection: `scratch/ai_llm/benchmark/rebuild_clean_dataset.py`
+patches `ladder.vmaf` / `semantic_raw` / `model_input.ladder_context` from the corrected metadata CSVs
+(size guard per row) and re-derives greedy labels with the same `greedy_rung` + `oracle_reward.json`
+(semantic weights recomputed per video; `throughput_bps_replay` kept) → `train_jsonl_clean/` (46 441 rows,
+1 800 shards; `rebuild_report.json`). **Regression check: 151/180 videos come out byte-identical** to the
+served dataset — the re-derivation reproduces the pipeline exactly; the 29 realigned videos (20 train /
+5 val / 4 test) changed on 7 167 rows, teacher label flipped on 1 786 (25 % of affected rows; up to 90 %
+on pexels_35282256). Scalers: network refit is identical (observations unchanged → kept
+`feature_scaler_network.json`); semantic refit → `config/feature_scaler_semantic_clean.json`
+(quality_sensitivity mean 21.8→24.8, std 10.8→8.6). **Headroom on clean VMAF**
+(`benchmark/catalog_selection/headroom_clean.csv`, reporting only, split unchanged): every one of the 29
+affected videos jumps from bin 0–2 to bin 3–7 (big_buck_bunny 14.8→89.3, pexels_34797065 7.5→67.4,
+pexels_35132716 25.3→68.5); no unaffected video moved. Consequence for the paper: the old "low-headroom"
+test bucket was almost entirely corrupt-VMAF videos — 3 of the 10 shrunk-matrix videos were affected, and
+the clean 26-video test set holds only ONE genuinely low-headroom video (pexels_28887170, 5.4). The
+earlier "low-headroom collapse" diagnosis must be re-read in that light; Fig-3 needs re-binning on clean
+headroom. Retrain submitted: lgpu jobs **8126266 / 8126267 / 8126268** (abr-clean-s41/42/43, identical
+recipe + budget, `SEMANTIC_SCALER=config/feature_scaler_semantic_clean.json`) → `checkpoints_clean/`.
+Phase-4 serving MUST pass `--semantic-scaler config/feature_scaler_semantic_clean.json`.
+
+## Phase 3 — Baselines (fair, published)
+Branch `feat/mpc-baselines`.
+- Add **RobustMPC** (Yin, SIGCOMM'15) — the de-facto strong network-only baseline you currently lack.
+- Add **quality-aware MPC** (RobustMPC with a VMAF QoE objective) — the content-aware comparator that
+  properly tests the thesis: *content-aware LLM vs content-aware control*. Slot both into the serving
+  bridge like Pensieve's `--policy` hook; no new data collection.
+- Keep Pensieve (content-blind learned control) and the heuristics.
+- **Risk to accept up front:** offline content effect was weak (v0≈v2, ΔR²≈0.05); Ours may not beat
+  quality-MPC. That is the real test — plan the narrative for either outcome.
+- **Commit:** "feat: RobustMPC + quality-aware MPC baselines".
+
+**PHASE 3 PROGRESS (2026-10-27, branch `feat/mpc-baselines`, commits a7b2ee2 / 84b9f5a / 394b6eb):**
+`scratch/ai_llm/mpc_policy.py` implements RobustMPC as published (Yin'15; Pensieve `test/mpc.py`
+reference: K=5 exhaustive, harmonic-mean + max-error discount) with two objectives — `Mpc` = QoE_lin
+(REBUF = R_max = 12, Pensieve's training objective) and `Qmpc` = our scoring QoE (semantic-weighted VMAF,
+down-only switch; vectorised mirror of `dp_oracle` with a 1e-9 parity test; K=1 == `greedy_rung`).
+Served as `--policy mpc|qmpc` (no guard, CPU). **Decisions:** the greedy down-only teacher is the ONLY
+%-reference (Pensieve had been scored against the DP ceiling — fixed in `score_bridge_arm.sh`); the paper
+keeps **four arms: Ours, Quality-MPC, RobustMPC, BOLA** (RAAHS/AAASH/FDASH/Pensieve dropped from tables);
+all arms stream the same session (whole video capped at `SIM_STOP_CAP=180` s — the old arms had 14-segment
+BOLA/RAAHS/AAASH collection runs vs 120/180 s bridge caps). BOLA re-run natively as `Quic_artifacts/BolaFull`
+(launcher 8126857); Qmpc/Mpc 130 cells each on skylake (jobs 8126858-66). Gotcha: run `python3 waf build` on
+the login node before any bridge job (a touched header made waf recompile on compute nodes). Runbook:
+`scratch/ai_llm/benchmark/RUN_BRIDGE_ARMS.md`. Offline eval of the Phase-2 retrain (job 8126535): clean
+seeds val F1 0.77–0.79 (served 0.74–0.79 on clean val rows) but test F1 0.68 vs 0.73–0.75 and replayed test
+QoE 7–8 % worse than the served seeds — inconclusive offline; the live Phase-4 run decides.
+
+## Phase 4 — Re-run benchmark on the FULL test set + statistical rigor
+- Run the **full 26-video test set × 5 rates = 130 cells per arm** (vs the old 10-video/50-cell shrunk
+  benchmark), clean VMAF, retrained LLM, all baselines. This is the headline change: full held-out
+  test coverage, no sub-selection bias.
+- **Compute note:** 130 LLM cells × seeds is heavy (lgpu wall-time was the reason for the original
+  shrink). Budget more jobs / stagger; heuristics are cheap (C++), the LLM + quality-MPC dominate.
+- **Multiple seeds** (≥3–5 RNG runs per cell) → report mean ± 95% CI and paired significance tests;
+  target p<0.05 for the headline claim (fixes the current p=0.07). Larger test N also tightens CIs.
+- Resolve the **mean-vs-median** instability and the **9 Mbps dip** honestly (report both; explain).
+- Regenerate all figures/tables from the clean results (archive old `results/` as `results_prevmaf/`).
+- **Commit:** "results: clean 50-cell benchmark with CIs + significance".
+
+**PHASE 4 PROGRESS (2026-10-27, commit f6414cf):** first full-matrix pass of Ours submitted — 130 cells,
+`checkpoints_clean/abr_v2_seed42.pt` (best clean val macro-F1 0.790) served with
+`feature_scaler_semantic_clean.json`, the shared 180 s session rule (`bench_model_packed.sbatch` now
+defaults to `SIMSTOP=auto`), 11 lgpu slices of 12 rows (jobs 8127598–8127608, KPAR=6) →
+`Quic_artifacts/AiDashClean` + `logs_bench_aidashclean`. Scoring = `score_bridge_arm.sh AiDashClean`;
+tables/figures read it with `MODEL_STEM=AiDashClean` (`benchmark/model_arm.py`), the legacy
+`AiDash/bench_down_scored` layout stays the default until Phase 4 is scored. Seeds 41/43 and CIs follow once
+the seed-42 pass and the three CPU arms are in.
+
+**PHASE 4 ENVIRONMENT FIX (2026-10-27/28, branch `fix/client-freeze`, merged into `feat/mpc-baselines`):**
+the first full-matrix pass exposed a simulator artifact: 12-16 % of UEs froze permanently (video unfinished,
+`interruptions` growing) in EVERY arm at EVERY rate (Qmpc 14.5 %, Mpc 12.2 %, Ours 16 %, BOLA 13.3 %), with
+some cells' simulation clock crawling at ~1 sim-s per wall-hour. Root cause = two bugs in the ns-3 QUIC
+module, found by core-dumping frozen cells: (i) the ACK frame was appended in place to the tx buffer's
+retransmittable packet, so retransmissions grew by one ACK frame per loss round (3.9 MB packets/cwnd),
+commit 13b68f5; (ii) after one RTO every later ACK re-marked all unacked packets lost and they were
+retransmitted as ONE packet whose size exceeded the UDP limit and was silently dropped, forever, commit
+8babc18. Defence in depth in the DASH client: dead-segment reconnect + 30 s playout-buffer cap (= the scoring
+player model), a59f4cd/eaed4b3. The fixed binary was validated on the six worst old-freeze cells
+(`Quic_artifacts/freeze_smoke.csv`, job 8134633): 0 frozen UEs, every reconnect succeeded, no crawl.
+Speed: the healthy-phase CPU cost was the mmWave FFT-codebook beam design redone every slot although its
+inputs never change (UEs/IAB fixed, channel matrices generated once with `UpdatePeriod` 0; the satellite's
+motion only changes path loss); it is now cached for the session through
+`ns3::MmWaveFFTCodebookBeamforming::CacheExpiry=1000s` (attribute added in 0805258, forwarded by every
+launcher via `NS3_ATTRS`, 4c040cf), verified byte-identical on a full cell and 8.5x faster. **Consequence:
+every arm is re-run on the fixed binary**; the old-binary results are archived as `*_oldenv` and reported
+only as the before/after disclosure (old Mpc 89.4 % / Qmpc 90.9 % of teacher, freeze 12-16 %). The
+manuscript must state the QUIC fixes, the beam-cache setting and the 30 s buffer cap as simulation settings.
+Runbook: `scratch/ai_llm/benchmark/RUN_BRIDGE_ARMS.md` ("Simulation environment").
+
+**Re-run 1 on the fixed binary (2026-10-29/30, jobs 8137137-44, 8137413-16; archived `*_rerun1`, not used):**
+4 x 130 cells, permanently frozen UEs down to 1.8-4.1 % from 12-16 %, but three more defects: zombie QUIC
+flows after every client reconnect (Close() never stopped an abandoned connection), a null-socket crash when
+an abandoned handshake completed late (3 cells), and a client hang after an ns-3 crash (2 cells, 7 h each).
+Fixed with an RFC 9000 immediate close, a guarded connect watchdog with exponential backoff, and an external
+simulator-death watchdog. The same analysis found that the scenario's single LEO pass (550 km, 7.8 km/s)
+drops below 25 deg elevation at t = 151.2 s, after which the IAB backhaul is lost in EVERY run (old-env
+included): the session cap is therefore 150 s (was 180 s), which changes only big_buck_bunny. The
+manuscript states "one satellite pass; sessions <= 150 s". All four arms are re-run once more (re-run 2).
+
+## Phase 4b — Model v3 (improve "Ours" on the fixed binary; 2026-10-31 → )
+Re-run 2 (fixed binary, 150 s cap, 1 seed) gave Ours 93.6 % of the greedy teacher (best of 4 arms) but
+Quality-MPC wins absolute QoE (13.18 vs 12.92) because Ours stalls 2× more at 4.5 Mb/s. Rules: select only
+on the 128 train / 26 val videos (never the 26 test videos); baselines untouched; fixed link rates only.
+- **A. Diagnosis** (`benchmark/diag_rerun2.py` → `results/diag_rerun2.txt`): the stall is a few early
+  4.5 Mb/s events; 38 % follows a decision the serving guard had already lowered using the stale 10 s
+  throughput average; the raw model over-asks at low rates (guard fires on 60–65 % of decisions); no
+  late-session collapse.
+- **B. Robust guard — REJECTED.** `inference_server.py --guard-estimator robust` (min of the 10 s average and
+  the RobustMPC per-chunk estimate; `mpc_policy.RobustThroughputEstimator`, parity-tested, 0/1645
+  mismatches on recorded Mpc/Qmpc decisions). On 26 val videos × {9, 4.5} Mb/s: 87.3 % vs 93.9 % of
+  teacher, stall 9 Mb/s 0.27 → 1.85 s, 4.5 Mb/s 2.75 → 0.97 s (fires on 86 %). Default stays `avg`.
+- **Training-loader bug (fixed, 3b4fc35).** `train.py` keyed session windows by (run_id, node_id), which
+  repeat across videos, so 99.9 % of 4-step windows mixed other videos' observations (train/serve
+  mismatch). Keyed by (video_name, run_id, node_id) now. Retrain on unchanged data: val macro-F1
+  0.77–0.79 → 0.81–0.82, but the live val check is a tie (93.6 % vs 93.9 %): fidelity to the greedy
+  teacher is not the bottleneck.
+- **C. Data re-collected on the fixed binary** (train+val videos only; test excluded): BOLA native
+  (1220 runs, 244 videos incl. the 90 overflow videos, seeds 11–15, 0.1 % frozen UEs), Quality-MPC bridge
+  (770 cells, seeds 21–25, 0.1 % frozen, 93.4 % teacher) and one round of the current model itself
+  (384 cells at 18/9/4.5 Mb/s, seeds 33–35, 92.3 % teacher; the only "frozen" UEs are `tears_of_steel`
+  at 9/4.5 Mb/s stuck at segment 5, identical in the Quality-MPC pass → a simulator property of that
+  cell, rows kept). Sessions now reach segment 40+ and the 30 s buffer cap (old data: ≤ 14 segments,
+  BOLA only, old binary). `train_jsonl_v3/`: 43,719 train / 10,918 val rows without, 56,498 train with
+  the model round; 14,846 extra rows for the 90 overflow videos.
+- **D. Lookahead teacher** (`relabel_lookahead.py`, K = 5 steps of `RobustMpcPolicy(objective="qoe")` on
+  the same `oracle_reward.json`; K = 1 reproduces the greedy labels 96 %). Two throughput inputs:
+  the observed estimate, or the RobustMPC predictor over realized per-chunk throughput. Offline val
+  replay QoE per session: greedy −3037, K5-estimate −1664, K5-robust −824, but the robust labels cut mean
+  VMAF 36 → 28 and replay stall is pessimistic (51 s/session for greedy vs < 3.5 s/UE live), so the
+  teacher is chosen on the LIVE val check, not on replay.
+- **E. Retrain grid** (`slurm/train_llm.sbatch`, window 4, 3 seeds): labels {greedy, K5-estimate,
+  K5-robust} × data {BOLA+Qmpc, +model round}. Val macro-F1 (own labels, seeds 41/42/43): greedy
+  .795/.810/.802; K5-estimate .688/.691/.683; K5-robust .565/.607/.601; greedy+model-round
+  .784/.813/.802. Offline replay of every checkpoint: `slurm/eval_v3_ckpts.slurm`. Live val check
+  (26 val videos × {9, 4.5} Mb/s, seed 42 of each set, `Quic_artifacts/ValV3_*`): **pending**.
+  Reference on the same cells: current model 93.9 %, stall 0.27 / 2.75 s per UE.
+- **F. Final benchmark**: 3 seeds per cell for all four arms on the 26 test videos, paired bootstrap CIs
+  and Wilcoxon per rate (extend `per_video_qoe_ci.py`); re-run 2 kept as the "Ours (v2 data)" row.
+  **Not started** (gated on E).
+
+## Phase 5 — Content-vs-network ablation
+- With VMAF fixed, run the ablation a journal will expect: network-only vs content+network variant of
+  *our* policy, on the clean metric, to quantify the content contribution directly (the thing the
+  "use-case framing" currently sidesteps). Report ΔQoE with CI.
+- **Commit:** "results: content-vs-network ablation".
+
+## Phase 6 — Manuscript (OJ-COMS specifics)
+- Reformat to the **OJ-COMS template** (IEEEtran `open-access`); resolve the `IEEEtran.cls`/compile
+  issue (compile in Overleaf or install the class).
+- **Expand related work** to journal depth: MPC/RobustMPC, Pensieve, Oboe, Fugu/Puffer, Minerva,
+  QARC, Comyco, BOLA — position the content-aware SLM precisely.
+- Add a rigorous **Methodology/reproducibility** section: architecture dims, training budget (LLM and
+  each baseline), reward weights, ladder, trace pool, seeds.
+- **Disclose the player model**: segments carry 2.0 s of encoded bytes but play for 3.3 s, so effective per-rung demand is 0.606 × nominal (uniform across arms); state the ladder in effective terms in Methods.
+- Add **Limitations & threats to validity** (the 0.606× de-rating above; single testbed;
+  content effect magnitude; simulation vs real traces).
+- **Graphical abstract**, ORCID, author bios, index terms. Vector figures, colorblind-safe, readable
+  at print size.
+- Keep measured tone / de-AI prose (no em-dashes/filler), LLM-as-use-case framing.
+- **Commit:** manuscript revisions.
+
+## Phase 7 — Reproducibility package
+- Public code release (tagged commit) with the tracked `scratch/ai_llm/` source + a top-level
+  `REPRODUCE.md` (build on login, run matrix, score, regenerate figs).
+- Data/checkpoint release (IEEE DataPort or Zenodo): corrected metadata, checkpoints, a small sample
+  of run bundles; DOI cited in the paper.
+- **Commit:** "docs: reproducibility package + release manifest".
+
+## Phase 8 — Submission checklist
+- Overleaf compiles cleanly on the OJ-COMS template; page/APC budget noted.
+- All claims trace to a clean-pipeline number; no corrupt-VMAF figure remains.
+- Significance stated with CIs; limitations present; related work complete.
+- Figures/tables referenced, captioned, vector. Graphical abstract + bios + ORCID in.
+- Cover letter; suggested reviewers; novelty statement.
+
+## Dependency order
+`0 → 1 → 2 → {3} → 4 → 5 → 6 → 7 → 8`. Phases 1–2 gate everything; no dataset expansion (we test on
+the existing FULL 26-video held-out set, not a shrunk 10). 3 can be implemented in parallel with 2
+but scored only after 2. Writing (6) proceeds in parallel but numbers are locked only after 4–5.

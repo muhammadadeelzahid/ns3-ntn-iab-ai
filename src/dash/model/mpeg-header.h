@@ -35,6 +35,12 @@ namespace ns3
  */
 
 #define MPEG_FRAMES_PER_SEGMENT 100
+// Segment playout = MPEG_FRAMES_PER_SEGMENT * MPEG_TIME_BETWEEN_FRAMES = 100 * 33 ms = 3.3 s.
+// NOTE (deliberate, disclosed): the server streams 2.0 s of encoded bytes per segment (abr
+// segment_duration_s=2) but the player plays each segment for 3.3 s, so the effective per-rung
+// network demand is 2.0/3.3 = 0.606 x nominal, uniformly for every ABR arm. Kept at 3.3 s so the
+// collected traces, teacher labels, trained model and benchmark stay self-consistent (and source ==
+// built binary); the paper reports the 0.606 factor instead of re-collecting all data at 2.0 s.
 #define MPEG_TIME_BETWEEN_FRAMES 33
 
 class MPEGHeader : public Header

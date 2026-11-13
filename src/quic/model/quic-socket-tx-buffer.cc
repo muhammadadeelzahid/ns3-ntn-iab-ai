@@ -547,6 +547,21 @@ void QuicSocketTxBuffer::ResetSentList (uint8_t pathId, uint32_t keepItems)
     }
 }
 
+uint32_t QuicSocketTxBuffer::MarkLostUpTo (uint8_t pathId, SequenceNumber32 largestSentBeforeRto)
+{
+  NS_LOG_FUNCTION (this << largestSentBeforeRto);
+  uint32_t marked = 0;
+  for (auto sent_it = m_subflowSentList[pathId].begin (); sent_it != m_subflowSentList[pathId].end (); ++sent_it)
+    {
+      if ((*sent_it)->m_packetNumber <= largestSentBeforeRto && !(*sent_it)->m_sacked && !(*sent_it)->m_lost)
+        {
+          (*sent_it)->m_lost = true;
+          marked++;
+        }
+    }
+  return marked;
+}
+
 // just comment out the following lines of code, as nowhere use it other than quic/test/quic-tx-buffer-test.cc
 bool QuicSocketTxBuffer::MarkAsLost (const SequenceNumber32 seq, uint8_t pathId)
 {

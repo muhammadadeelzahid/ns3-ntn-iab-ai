@@ -70,6 +70,22 @@ Native C++ baseline (no shared-memory IPC):
 python3 ./waf --run "ntn-iab-quic-dash-ai --aiEnable=false --numUes=1 --run=1 --algorithm=ns3::FdashClient"
 ```
 
+### DASH trace extraction (Slurm batch)
+
+Full pipeline (metadata → sims → training traces → oracle → `train_jsonl/`): **[docs/end-to-end-abr-pipeline.md](docs/end-to-end-abr-pipeline.md)**.
+
+Slurm details, env vars, troubleshooting: **[docs/dash-trace-pipeline.md](docs/dash-trace-pipeline.md)**.
+
+```bash
+export METADATA_DIR=/project/6030214/adeel/abr/output/metadata
+sbatch dash_trace_smoke.slurm          # single end-to-end check
+sbatch dash_trace_launch.slurm         # batch sim array
+# after workers:
+sbatch extract_traces.slurm            # trace_decisions.jsonl
+sbatch extract_throughput_traces.slurm   # throughput_trace.jsonl (oracle)
+sbatch dp_oracle.slurm
+```
+
 ## Maintainers
 
 - **Muhammad Adeel Zahid** (`adeel.m.zahid@gmail.com`)

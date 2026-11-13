@@ -38,6 +38,8 @@ class HttpParser
     HttpParser();
     virtual ~HttpParser();
     void ReadSocket(Ptr<Socket> socket);
+    /** Drop any partially assembled message (call when the underlying socket is replaced). */
+    void Reset();
     void SetApp(DashClient* app);
     void TryToPushToPlayer();
 

@@ -33,7 +33,14 @@ PYBIND11_MODULE(ns3ai_abr_dash_ai_py, m)
         .def_readwrite("prev_bitrate_bps", &AbrDashCpp2PyMsg::prev_bitrate_bps)
         .def_readwrite("player_state", &AbrDashCpp2PyMsg::player_state)
         .def_readwrite("interruption_time_s", &AbrDashCpp2PyMsg::interruption_time_s)
-        .def_readwrite("interruptions", &AbrDashCpp2PyMsg::interruptions);
+        .def_readwrite("interruptions", &AbrDashCpp2PyMsg::interruptions)
+        .def_readwrite("smoothed_rtt_ms", &AbrDashCpp2PyMsg::smoothed_rtt_ms)
+        .def_readwrite("loss_rate_recent", &AbrDashCpp2PyMsg::loss_rate_recent)
+        .def_readwrite("throughput_ema_bps", &AbrDashCpp2PyMsg::throughput_ema_bps)
+        .def_readwrite("throughput_std_bps", &AbrDashCpp2PyMsg::throughput_std_bps)
+        .def_readwrite("download_time_ratio", &AbrDashCpp2PyMsg::download_time_ratio)
+        .def_readwrite("last_decision_delay_s", &AbrDashCpp2PyMsg::last_decision_delay_s)
+        .def_readwrite("bitrate_switch_count_recent", &AbrDashCpp2PyMsg::bitrate_switch_count_recent);
 
     py::class_<AbrDashPy2CppMsg>(m, "AbrDashPy2CppMsg")
         .def(py::init<>())

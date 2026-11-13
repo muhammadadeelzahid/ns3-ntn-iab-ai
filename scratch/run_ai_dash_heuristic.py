@@ -87,10 +87,11 @@ def fdash_heuristic(state):
 
     result = output * m_bitrateEstimate
     
-    rates = [45000, 89000, 131000, 178000, 221000, 263000, 334000,
-             396000, 522000, 595000, 791000, 1033000, 1245000, 1547000,
-             2134000, 2484000, 3079000, 3527000, 3840000, 4220000, 9500000,
-             15000000, 30000000, 66000000, 85000000]
+    try:
+        from ai_llm.paths import NS3_RATE_LADDER_BPS
+    except ImportError:
+        NS3_RATE_LADDER_BPS = [250_000, 750_000, 1_500_000, 3_000_000, 6_000_000, 12_000_000]
+    rates = list(NS3_RATE_LADDER_BPS)
     
     m_interruptionLimit = rates[-1]
     if result > m_interruptionLimit:
@@ -162,36 +163,40 @@ def main():
     try:
         decisions_made = 0
         while True:
+            # Bail out before blocking if the simulation subprocess is gone.
+            if exp.proc is not None and exp.proc.poll() is not None:
+                print(
+                    f"[Python] ns-3 subprocess exited (rc={exp.proc.returncode}) "
+                    f"before signalling finish; stopping loop.",
+                    flush=True,
+                )
+                break
+
             # Block until C++ writes the state
             msg.PyRecvBegin()
-            
+
             # Check if simulation finished
             if msg.PyGetFinished():
                 print("[Python] Simulation finished!", flush=True)
                 break
-            
+
             # Get the state struct
             state = msg.GetCpp2PyStruct()
-            
+
             # Make a decision
             chosen_bitrate, delay_s = fdash_heuristic(state)
-            
+
             msg.PyRecvEnd()
-            
+
             # Write the action back to C++
             msg.PySendBegin()
             action = msg.GetPy2CppStruct()
             action.chosen_bitrate_bps = chosen_bitrate
             action.delay_s = delay_s
             msg.PySendEnd()
-            
+
             decisions_made += 1
-            
-            # Stop early if we just want a quick test
-            # if decisions_made >= 10:
-            #    print("[Python] 10 decisions made, testing complete.")
-            #    break
-                
+
     except KeyboardInterrupt:
         print("[Python] Interrupted by user.", flush=True)
     finally:

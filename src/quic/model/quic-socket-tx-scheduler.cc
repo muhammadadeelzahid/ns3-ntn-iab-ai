@@ -243,6 +243,16 @@ QuicSocketTxScheduler::GetNewSegment (uint32_t numBytes, uint8_t pathId)
           NS_LOG_LOGIC ("Updating application buffer size: " << m_appSize);
           continue;
         }
+      else if (currentItem->m_retrans)
+        {
+          // A re-queued lost packet is a complete, already-framed payload (possibly several stream frames under
+          // their own subheaders). The split below strips only the first subheader and re-offsets the rest as one
+          // frame, which would corrupt the stream. Keep it whole for the next packet (it is at most one MTU).
+          NS_LOG_INFO ("Retransmitted item does not fit, keeping it whole for the next packet");
+          m_appList.push (scheduleItem);
+          m_appSize += currentPacket->GetSize ();
+          break;
+        }
       else if (firstSegment)  // we cannot transmit a full packet, so let's split it and update the subheaders
         {
           firstSegment = false;

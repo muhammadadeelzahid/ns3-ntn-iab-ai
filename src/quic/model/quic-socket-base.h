@@ -839,6 +839,14 @@ protected:
    */
   void ScheduleCloseAndSendConnectionClosePacket ();
 
+  /**
+   * \brief Immediate close (RFC 9000 Sec. 10.2): stop ALL transmission of stream data, retransmissions
+   * and ACKs now, enter CLOSING and remove the socket after the draining period.
+   * \param sendClose true = the local application closed: send one CONNECTION_CLOSE to the peer
+   *        false = the peer closed (or the idle timer expired): drain silently
+   */
+  void ImmediateClose (bool sendClose);
+
   // Connections to other layers of the Stack
   Ipv4EndPoint* m_endPoint;      //!< the IPv4 endpoint
   Ipv6EndPoint* m_endPoint6;     //!< the IPv6 endpoint
@@ -975,6 +983,8 @@ protected:
   
   void UpdateReward (uint32_t oldValue, uint32_t newValue);
   bool m_appCloseSentListNoEmpty;
+  bool m_immediateClose {false};   //!< ImmediateClose ran: nothing but CONNECTION_CLOSE may be sent
+  bool m_peerClosed {false};       //!< the peer sent CONNECTION_CLOSE: drain silently
   Time lastAckTime;
 };
 

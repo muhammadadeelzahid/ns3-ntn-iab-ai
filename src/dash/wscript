@@ -10,6 +10,7 @@ def build(bld):
     module = bld.create_ns3_module('dash', ['core', 'applications','point-to-point','wifi','netanim','ai'])
     module.source = [
          'model/dash-client.cc',
+         'model/dash-metadata.cc',
          'model/http-parser.cc',
          'model/mpeg-player.cc',
          'model/dash-server.cc',
@@ -22,6 +23,7 @@ def build(bld):
          'model/algorithms/raahs-client.cc',
          'model/algorithms/sftm-client.cc',
          'model/algorithms/ai-dash-client.cc',
+         'model/algorithms/bola-client.cc',
          'helper/dash-client-helper.cc',
          'helper/dash-server-helper.cc',
 #        'model/dash.cc',
@@ -37,6 +39,7 @@ def build(bld):
     headers.module = 'dash'
     headers.source = [
          'model/dash-client.h',
+         'model/dash-metadata.h',
          'model/http-parser.h',
          'model/mpeg-player.h',
          'model/dash-server.h',
@@ -49,6 +52,7 @@ def build(bld):
          'model/algorithms/raahs-client.h',
          'model/algorithms/sftm-client.h',
          'model/algorithms/ai-dash-client.h',
+         'model/algorithms/bola-client.h',
          'helper/dash-client-helper.h',
          'helper/dash-server-helper.h',
 #        'model/dash.h',

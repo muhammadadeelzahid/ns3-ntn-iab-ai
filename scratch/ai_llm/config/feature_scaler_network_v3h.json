@@ -1,0 +1,51 @@
+{
+  "feature_names": [
+    "throughput_estimate_bps",
+    "buffer_level_s",
+    "buffer_differential_s",
+    "segment_fetch_time_s",
+    "last_segment_bitrate_bps",
+    "smoothed_rtt_ms",
+    "loss_rate_recent",
+    "realized_throughput_bps"
+  ],
+  "log_features": [
+    "throughput_estimate_bps",
+    "last_segment_bitrate_bps",
+    "realized_throughput_bps"
+  ],
+  "mean": [
+    15.521430700865745,
+    12.655838217379536,
+    0.6201844097460442,
+    1.6334086526100924,
+    13.527733137069957,
+    85.43031507117671,
+    0.11116860444087305,
+    15.602400153237658
+  ],
+  "std": [
+    1.542883420656054,
+    8.448474896140276,
+    1.57781994033079,
+    2.223150233449593,
+    4.393902437435005,
+    128.3918733266829,
+    0.684334274425187,
+    1.5874041776706658
+  ],
+  "source": "../../train_jsonl_v3/merged_k5estimate_dag/train/*.jsonl",
+  "fitted_at": "2026-11-02T16:40:09.198420+00:00",
+  "n_rows": 56498,
+  "n_files": 1664,
+  "per_feature_fit_count": {
+    "throughput_estimate_bps": 56498,
+    "buffer_level_s": 56498,
+    "buffer_differential_s": 56498,
+    "segment_fetch_time_s": 56498,
+    "last_segment_bitrate_bps": 56498,
+    "smoothed_rtt_ms": 45942,
+    "loss_rate_recent": 56498,
+    "realized_throughput_bps": 56498
+  }
+}

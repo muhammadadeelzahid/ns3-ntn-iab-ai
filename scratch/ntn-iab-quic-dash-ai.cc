@@ -546,6 +546,10 @@ void LogTime()
 // ---- ns3-ai: DASH ABR shared-memory IPC (Python must create shared memory first) ----
 namespace {
 bool g_dashAiEnabled{true};
+// Optional unique prefix for the ns3-ai shared-memory object names (set via --shmPrefix). Lets
+// several ns-3 IPC runs share ONE node without colliding on the default "My Seg" — so every GPU on
+// a multi-GPU node can host its own run. Empty = the legacy default names (single run per node).
+std::string g_shmPrefix{""};
 
 void
 ConfigureDashAiMsgInterface()
@@ -555,7 +559,16 @@ ConfigureDashAiMsgInterface()
     iface->SetUseVector(false); // one ABR decision per segment (struct mode)
     iface->SetHandleFinish(true);
     iface->SetMemorySize(4096);
-    iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
+    if (g_shmPrefix.empty())
+    {
+        iface->SetNames("My Seg", "My Cpp to Python Msg", "My Python to Cpp Msg", "My Lockable");
+    }
+    else
+    {
+        // Must match the names the Python side (run_ai_dash_llm.py) passes to Experiment(...).
+        iface->SetNames(g_shmPrefix + "_seg", g_shmPrefix + "_c2p",
+                        g_shmPrefix + "_p2c", g_shmPrefix + "_lock");
+    }
 }
 } // namespace
 
@@ -745,17 +758,30 @@ main (int argc, char *argv[])
   uint32_t numRelays = 1;
   uint32_t numUes = 10;  // Number of UE nodes/users
   std::string algorithm = "ns3::FdashClient"; // DASH adaptation algorithm
+  std::string dashMetadataCsv = "../abr/output/metadata/hiking_segments.csv";
+  std::string dashMetadataTrace = "";
   uint32_t rlcBufSize = 50;  // Increased from 10 to 50 MB to prevent RLC buffer overflows and packet drops
-  uint32_t interPacketInterval = 10000; 
+  uint32_t interPacketInterval = 10000;
   uint32_t packetSize = 1400; //bytes // Decreased from 1500 to 1400 to avoid IP fragmentation (packet < MTU - headers)
+  // S1-U feeder (gNB/satellite <-> EPC core) bottleneck data rate. Default 100Gb/s = effectively
+  // unlimited (no congestion). Set a narrow value (e.g. "15Mbps") to make the satellite-to-core
+  // backhaul the shared bottleneck so a few UEs already congest it — the NTN-appropriate way to
+  // stress-test ABR policies without simulating many flows. (NOT the cloud-side internet hop.)
+  std::string linkRate = "100Gb/s";
   cmd.AddValue("aiEnable",
                "Enable ns3-ai DASH ABR shared-memory IPC (requires Python driver to create shared memory first)",
                g_dashAiEnabled);
   cmd.AddValue("algorithm", "DASH adaptation algorithm (e.g. ns3::FdashClient or ns3::AiDashClient)", algorithm);
+  cmd.AddValue("dashMetadataCsv", "Path to DASH segment metadata CSV (size_bytes_* columns).", dashMetadataCsv);
+  cmd.AddValue("dashMetadataTrace",
+               "Optional CSV trace of per-segment server payload (source=metadata|synthetic|reject_invalid).",
+               dashMetadataTrace);
   cmd.AddValue("run", "run for RNG (for generating different deterministic sequences for different drops)", run);
   cmd.AddValue("am", "RLC AM if true", rlcAm);
   cmd.AddValue("numRelay", "Number of relays", numRelays);
   cmd.AddValue("numUes", "Number of UE nodes/users", numUes);
+  cmd.AddValue("linkRate", "S1-U feeder (satellite<->core) bottleneck data rate, e.g. 15Mbps (default 100Gb/s = uncongested)", linkRate);
+  cmd.AddValue("shmPrefix", "Unique prefix for the ns3-ai shared-memory names (empty=default 'My Seg'; set to run multiple IPC jobs per node)", g_shmPrefix);
   cmd.AddValue("rlcBufSize", "RLC buffer size [MB]", rlcBufSize);
   cmd.AddValue("intPck", "interPacketInterval [us]", interPacketInterval);
 
@@ -906,7 +932,15 @@ main (int argc, char *argv[])
   // QUIC Congestion Control Configuration
   // QUIC Congestion Control Configuration
   std::string ccAlgorithm = "ns3::QuicBbr";
+  double simStopTime = 90.0;
+  double maxVideoDuration = 0.0;
   cmd.AddValue("ccAlgorithm", "QUIC Congestion Control Algorithm (ns3::QuicBbr or ns3::QuicCongestionControl)", ccAlgorithm);
+  cmd.AddValue("simStopTime",
+               "Simulation stop time in seconds (apps and Simulator::Stop)",
+               simStopTime);
+  cmd.AddValue("maxVideoDuration",
+               "Cap DASH playback to this many seconds of content (0 = full metadata)",
+               maxVideoDuration);
   cmd.Parse(argc, argv);
 
   // Set the socket type based on the command line argument
@@ -979,6 +1013,10 @@ main (int argc, char *argv[])
   // Config::SetDefault ("ns3::MmWavePhyMacCommon::SymbolsPerSubframe", UintegerValue(240));
   // Config::SetDefault ("ns3::MmWavePhyMacCommon::SubframePeriod", DoubleValue(1000));
   // Config::SetDefault ("ns3::MmWavePhyMacCommon::SymbolPeriod", DoubleValue(1000/240));
+  // Throttle the S1-U feeder (gNB/satellite <-> EPC core) to the CLI linkRate (default 100Gb/s =
+  // uncongested). This is the satellite-to-core backhaul; narrowing it (e.g. 15Mbps) makes it the
+  // shared bottleneck for all UEs so ABR decisions become hard. Must precede epcHelper creation.
+  Config::SetDefault ("ns3::MmWavePointToPointEpcHelper::S1uLinkDataRate", DataRateValue (DataRate (linkRate)));
   Ptr<MmWaveHelper> mmwaveHelper = CreateObject<MmWaveHelper> ();
   Ptr<MmWavePointToPointEpcHelper>  epcHelper = CreateObject<MmWavePointToPointEpcHelper> ();
   mmwaveHelper->SetEpcHelper (epcHelper);
@@ -1075,16 +1113,11 @@ main (int argc, char *argv[])
   NS_LOG_UNCOND("Actually created " << enbNodes.GetN() << " eNB nodes");
   NS_LOG_UNCOND("================================\n");
 
-  // Video duration configuration
-  // double desiredVideoDuration = 0.0;  // Desired video duration in seconds
-  
-  // Calculate minimum simulation duration
-  // Video duration + buffer time for handshake, initial buffering, cleanup, and app stop buffer
-  // double minSimulationDuration = desiredVideoDuration*1.15;
-  
-  // Get current stopTime (line 1024)
-  double desiredVideoDuration = 90.0;
-  double stopTime = desiredVideoDuration;  // Minimal time for testing
+  double stopTime = simStopTime;
+  if (stopTime <= 0.0)
+  {
+    stopTime = 90.0;
+  }
   
   // // Check if current stopTime is less than minimum, and adjust if needed
   // if (stopTime < minSimulationDuration)
@@ -1341,6 +1374,16 @@ main (int argc, char *argv[])
   // Create a DASH server on each UE (listening on port 80)
   DashServerHelper dashServer ("ns3::QuicSocketFactory",
                                 InetSocketAddress(Ipv4Address::GetAny(), 80));
+  dashServer.SetAttribute("MetadataCsvPath", StringValue(dashMetadataCsv));
+  if (!dashMetadataTrace.empty())
+    {
+      dashServer.SetAttribute("MetadataTracePath", StringValue(dashMetadataTrace));
+    }
+  else if (!dashMetadataCsv.empty())
+    {
+      dashMetadataTrace = "dash_metadata_segments.csv";
+      dashServer.SetAttribute("MetadataTracePath", StringValue(dashMetadataTrace));
+    }
   serverApps.Add (dashServer.Install (remoteHost));
   NS_LOG_UNCOND("DASH Server installed on remoteHost (IP=" << remoteHostAddr << ") port 80");
   
@@ -1352,6 +1395,11 @@ main (int argc, char *argv[])
                                   InetSocketAddress(remoteHostAddr, 80),
                                   algorithm);
     dashClient.SetAttribute ("VideoId", UintegerValue(u + 1));
+    dashClient.SetAttribute ("MetadataCsvPath", StringValue(dashMetadataCsv));
+    if (maxVideoDuration > 0.0)
+    {
+      dashClient.SetAttribute ("MaxVideoDuration", TimeValue(Seconds(maxVideoDuration)));
+    }
     dashClient.SetAttribute ("TargetDt", TimeValue(Seconds(target_dt)));
     dashClient.SetAttribute ("window", TimeValue(MilliSeconds(window)));
     dashClient.SetAttribute ("bufferSpace", UintegerValue(bufferSpace));
@@ -1541,6 +1589,8 @@ main (int argc, char *argv[])
   NS_LOG_UNCOND("Number of UEs: " << ueNodes.GetN());
   NS_LOG_UNCOND("Simulation time: " << stopTime << " seconds");
   NS_LOG_UNCOND("DASH algorithm: " << algorithm);
+  NS_LOG_UNCOND("DASH metadata CSV: " << (dashMetadataCsv.empty() ? "(none, synthetic sizes)" : dashMetadataCsv));
+  NS_LOG_UNCOND("DASH metadata trace: " << (dashMetadataTrace.empty() ? "(disabled)" : dashMetadataTrace));
   NS_LOG_UNCOND("Target buffering time: " << target_dt << " seconds");
 
   if (g_dashAiEnabled)

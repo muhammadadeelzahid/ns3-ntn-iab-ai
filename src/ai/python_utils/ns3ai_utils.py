@@ -17,14 +17,76 @@
 #         Hao Yin <haoyin@uw.edu>
 #         Muyuan Shen <muyuan_shen@hust.edu.cn>
 
+import atexit
+import ctypes
+import ctypes.util
 import os
 import shlex
-import subprocess
-import time
 import signal
+import subprocess
+import sys
+import threading
+import time
+import weakref
 
 
 SIMULATION_EARLY_ENDING = 0.5   # wait and see if the subprocess is running after creation
+
+
+# ---------------------------------------------------------------------------
+# Process-tree safety primitives
+# ---------------------------------------------------------------------------
+#
+# Orphaned ns-3 processes were observed when the Python orchestrator died
+# without running its `finally: exp.kill()` block (e.g. SIGKILL, lost SSH
+# session, hard crash). To make cleanup robust we combine:
+#
+#   1) A dedicated process group / session for the waf child (so we can
+#      kill the whole subtree with one killpg).
+#   2) Linux PR_SET_PDEATHSIG on the waf child, which asks the kernel to
+#      deliver SIGTERM to the child when its parent (this Python process)
+#      dies, even via SIGKILL. wutils.py performs the same trick on the
+#      ns-3 binary so the protection extends to grandchildren.
+#   3) atexit + SIGINT/SIGTERM/SIGHUP handlers that invoke Experiment.kill()
+#      and then re-raise the signal so the normal exit semantics survive.
+#   4) A graceful SIGTERM -> wait -> SIGKILL escalation in kill_proc_tree.
+#
+# Together these ensure that no matter how the Python interpreter exits,
+# the waf and ns-3 processes it spawned are torn down.
+# ---------------------------------------------------------------------------
+
+_PR_SET_PDEATHSIG = 1  # from <sys/prctl.h>
+
+
+def _set_parent_death_signal(sig=signal.SIGTERM):
+    """Best-effort PR_SET_PDEATHSIG on Linux; no-op elsewhere."""
+    if not sys.platform.startswith('linux'):
+        return
+    try:
+        libc_name = ctypes.util.find_library('c') or 'libc.so.6'
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+        libc.prctl(_PR_SET_PDEATHSIG, sig, 0, 0, 0)
+    except Exception:
+        # If prctl is unavailable we just lose the parent-death safety net;
+        # the explicit cleanup paths still cover the common cases.
+        pass
+
+
+def _child_preexec():
+    """preexec_fn for the waf subprocess.
+
+    Runs in the forked child before exec. Puts the child into its own
+    session/process group (so we can killpg the whole subtree) and asks
+    the kernel to SIGTERM us when our parent dies.
+    """
+    try:
+        os.setsid()
+    except OSError:
+        try:
+            os.setpgrp()
+        except OSError:
+            pass
+    _set_parent_death_signal(signal.SIGTERM)
 
 
 def get_setting(setting_map):
@@ -49,69 +111,176 @@ def run_single_simulation(path, pname, setting=None, env=None, show_output=False
     env['LD_LIBRARY_PATH'] = os.path.abspath(os.path.join(path, 'build', 'lib'))
 
     waf = waf_cmd or os.environ.get('WAF_CMD', './waf')
-    # Single-path waf (e.g. ./waf) is resolved under path; commands with spaces
-    # (e.g. python3 ./waf) are used as-is for shell=True.
-    if (not os.path.isabs(waf)) and (' ' not in waf):
-        waf = os.path.join(path, waf)
-        waf = os.path.normpath(waf)
+    # waf may be a single path (./waf) or a command with arguments
+    # (python3 ./waf). Split into argv tokens. We deliberately do not
+    # rewrite the path tokens: callers chdir to the ns-3 root before
+    # spawning, so the relative form (./waf) resolves correctly.
+    waf_argv = shlex.split(waf)
+    if not waf_argv:
+        raise RuntimeError('ns3ai_utils: empty waf command')
+
     run_arg = pname
     if setting:
         run_arg += get_setting(setting)
-    cmd = '{} --run {}'.format(waf, shlex.quote(run_arg))
 
-    if show_output:
-        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, env=env,
-                                  stdin=subprocess.PIPE,
-                                  preexec_fn=os.setpgrp)
-    else:
-        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, env=env,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                preexec_fn=os.setpgrp)
+    argv = waf_argv + ['--run', run_arg]
+    cmd_display = ' '.join(shlex.quote(a) for a in argv)
 
-    return cmd, proc
+    popen_kwargs = dict(
+        env=env,
+        universal_newlines=True,
+        stdin=subprocess.PIPE,
+        preexec_fn=_child_preexec,
+    )
+    if not show_output:
+        popen_kwargs['stdout'] = subprocess.PIPE
+        popen_kwargs['stderr'] = subprocess.PIPE
+
+    proc = subprocess.Popen(argv, **popen_kwargs)
+    return cmd_display, proc
 
 
-# used to kill the waf/simulation process and its child processes
 def kill_proc_tree(p, timeout=None, on_terminate=None):
+    """Tear down the waf/ns-3 subtree spawned by run_single_simulation.
+
+    Sends SIGTERM to the child's process group first, waits up to
+    ``timeout`` seconds (default 3s), then escalates to SIGKILL if any
+    process is still alive. Finally reaps the immediate child.
+    """
     print('ns3ai_utils: Killing subprocesses...')
-    # waf is started with setpgrp — kill the whole process group.
     _ = on_terminate  # unused; kept for signature compatibility
+
     pid = None
     if isinstance(p, int):
         pid = p
     elif hasattr(p, 'pid'):
         pid = p.pid
-    if pid is not None and pid > 0:
+    if pid is None or pid <= 0:
+        return [], []
+
+    # Snapshot the process group ID before the child possibly exits.
+    gid = None
+    try:
+        gid = os.getpgid(pid)
+    except (OSError, ProcessLookupError):
+        gid = None
+
+    # Step 1: graceful SIGTERM to the whole group.
+    if gid is not None:
         try:
-            gid = os.getpgid(pid)
-            os.killpg(gid, signal.SIGKILL)
+            os.killpg(gid, signal.SIGTERM)
         except (OSError, ProcessLookupError):
-            try:
-                if hasattr(p, 'kill'):
-                    p.kill()
-            except Exception:
-                pass
-    if hasattr(p, 'wait'):
-        wait_s = timeout if timeout is not None else 5
+            pass
+    else:
         try:
-            p.wait(timeout=wait_s)
+            if hasattr(p, 'terminate'):
+                p.terminate()
         except Exception:
             pass
+
+    # Step 2: wait briefly for graceful exit.
+    grace = timeout if timeout is not None else 3.0
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if hasattr(p, 'poll') and p.poll() is not None:
+            break
+        time.sleep(0.05)
+
+    # Step 3: SIGKILL anything still alive in the group.
+    if hasattr(p, 'poll') and p.poll() is None:
+        if gid is not None:
+            try:
+                os.killpg(gid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+        try:
+            if hasattr(p, 'kill'):
+                p.kill()
+        except Exception:
+            pass
+
+    # Step 4: reap the immediate child to free zombies.
+    if hasattr(p, 'wait'):
+        try:
+            p.wait(timeout=2)
+        except Exception:
+            pass
+
     return [], []
 
 
-# According to Python signal docs, after a signal is received, the
-# low-level signal handler sets a flag which tells the virtual machine
-# to execute the corresponding Python signal handler at a later point.
-#
-# As a result, a long ns-3 simulation, during which no C++-Python
-# interaction occurs (such as the Multi-BSS example), may run uninterrupted
-# for a long time regardless of any signals received.
-def sigint_handler(sig, frame):
+# ---------------------------------------------------------------------------
+# Global cleanup / signal handling
+# ---------------------------------------------------------------------------
+
+_active_experiments = weakref.WeakSet()
+_cleanup_lock = threading.Lock()
+_previous_handlers = {}
+_handlers_installed = False
+_atexit_registered = False
+
+
+def _kill_all_experiments():
+    """Kill every live Experiment. Safe to call multiple times."""
+    with _cleanup_lock:
+        for exp in list(_active_experiments):
+            try:
+                exp.kill()
+            except Exception:
+                pass
+
+
+def _install_cleanup_hooks():
+    """Install atexit + SIGINT/SIGTERM/SIGHUP handlers (idempotent)."""
+    global _handlers_installed, _atexit_registered
+
+    if not _atexit_registered:
+        atexit.register(_kill_all_experiments)
+        _atexit_registered = True
+
+    if _handlers_installed:
+        return
+    _handlers_installed = True
+
+    def _handler(sig, frame):
+        # Note: this runs in the main thread when the Python interpreter
+        # next checks for pending signals. If the main thread is stuck
+        # inside a C extension (e.g. the ns3-ai busy-spin) this handler
+        # may be delayed - but the spawned ns-3 subtree is also covered
+        # by atexit and by PR_SET_PDEATHSIG, so cleanup still happens.
+        try:
+            print(
+                "\nns3ai_utils: signal {} received, cleaning up...".format(sig),
+                flush=True,
+            )
+        except Exception:
+            pass
+        _kill_all_experiments()
+        # Raise an exception so caller `finally:` blocks still run. We use
+        # KeyboardInterrupt for SIGINT (matching Python's default Ctrl+C
+        # semantics so existing `except KeyboardInterrupt:` clauses fire)
+        # and SystemExit for SIGTERM/SIGHUP.
+        if sig == signal.SIGINT:
+            raise KeyboardInterrupt()
+        raise SystemExit(128 + int(sig))
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            prev = signal.signal(sig, _handler)
+            _previous_handlers[sig] = prev
+        except (OSError, ValueError):
+            # Signal not available (e.g. running in a thread that can't
+            # install handlers) - just skip it.
+            pass
+
+
+# Backwards-compatible alias retained in case anything imports the old name.
+# The new global hooks are the preferred mechanism; this handler now performs
+# explicit cleanup before exiting so finally-blocks in callers still execute.
+def sigint_handler(sig, frame):  # pragma: no cover - legacy shim
     print("\nns3ai_utils: SIGINT detected")
-    exit(1)  # this will execute the `finally` block
+    _kill_all_experiments()
+    exit(1)
 
 
 # This class sets up the shared memory and runs the simulation process.
@@ -158,11 +327,23 @@ class Experiment:
 
         self.proc = None
         self.simCmd = None
+
+        # Register for global cleanup BEFORE any subprocess is spawned, so
+        # even an early failure in run() still triggers teardown.
+        _install_cleanup_hooks()
+        _active_experiments.add(self)
+
         print('ns3ai_utils: Experiment initialized (waf)')
 
     def __del__(self):
-        self.kill()
-        del self.msgInterface
+        try:
+            self.kill()
+        except Exception:
+            pass
+        try:
+            del self.msgInterface
+        except Exception:
+            pass
         print('ns3ai_utils: Experiment destroyed')
 
     # run waf --run with the setting being input
@@ -181,17 +362,21 @@ class Experiment:
             print('ns3ai_utils: Hint: build the target first: ./waf build')
             print('ns3ai_utils: Hint: if ./waf fails, try: export WAF_CMD="python3 ./waf"')
             exit(1)
-        signal.signal(signal.SIGINT, sigint_handler)
         return self.msgInterface
 
     def kill(self):
-        if self.proc and self.isalive():
-            kill_proc_tree(self.proc)
-            self.proc = None
-            self.simCmd = None
+        if self.proc is not None:
+            try:
+                if self.isalive():
+                    kill_proc_tree(self.proc)
+            except Exception:
+                pass
+            finally:
+                self.proc = None
+                self.simCmd = None
 
     def isalive(self):
-        return self.proc.poll() is None
+        return self.proc is not None and self.proc.poll() is None
 
 
 __all__ = ['Experiment', 'run_single_simulation']

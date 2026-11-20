@@ -21,6 +21,11 @@ Key conventions (all sourced from the repo, not invented):
   * Encoded segments are 2.0 s; the simulated player buffered in 3.3 s units (100 frames x 33 ms).
     Both are reported; sim times are copied verbatim (not rescaled).
 
+Other algorithms (--algorithm robustmpc|mpc|bola) are exported the same way, one bundle per
+algorithm, so every bundle is read with the same conventions. The bridge arms (RobustMPC, Quality-MPC)
+have decisions.jsonl + a task log like the LLM; BOLA's rows are rebuilt from the per-decision line in
+its cell's sim.log (_rows_from_simlog). Per-segment vmaf_min/ssim/psnr come from viewer_quality.py.
+
 Usage:
   python scratch/ai_llm/export_viewer_bundle.py --list          # dry-run, write nothing
   python scratch/ai_llm/export_viewer_bundle.py --videos hiking --runs run_4
@@ -62,6 +67,27 @@ PLAYER_SEGMENT_DURATION_S = 3.3    # DATA_SPEC Q1: simulated player's buffered u
 # Default 5-video set spanning the headroom bins {0,2,3,5,6} of the 10-video test set.
 DEFAULT_VIDEOS = ["big_buck_bunny", "pexels_30886101", "pexels_34254266", "hiking", "peace_autumn_lake"]
 DEFAULT_RUNS = ["run_2", "run_3", "run_4"]  # 36 / 18 / 9 Mbps
+
+# ABR algorithms the viewer compares. "mpc" is Quality-MPC (arm Qmpc: RobustMPC's controller with the
+# benchmark QoE as objective); "robustmpc" is RobustMPC with the linear QoE of Yin'15 (arm Mpc). Both
+# are served by mpc_policy.py over the same ns3-ai bridge as the LLM, so their ns-3 client is
+# AiDashClient. BOLA is ns-3's native BolaClient (attribute defaults, no bridge).
+ALGORITHMS = {
+    "llm": {"client": "ns3::AiDashClient", "family": "learned", "params": {},
+            "description": "Content-aware SLM ABR policy (Qwen2.5-1.5B + LoRA) served over the ns3-ai bridge."},
+    "robustmpc": {"client": "ns3::AiDashClient", "family": "mpc",
+                  "params": {"horizon": 5, "throughput": "harmonic mean / (1 + max error)",
+                             "objective": "linear QoE (Yin et al. 2015)", "server": "mpc_policy.py --policy mpc"},
+                  "description": "RobustMPC (Yin et al., SIGCOMM 2015), served over the ns3-ai bridge."},
+    "mpc": {"client": "ns3::AiDashClient", "family": "mpc",
+            "params": {"horizon": 5, "throughput": "harmonic mean / (1 + max error)",
+                       "objective": "benchmark QoE (VMAF, stall, switch)", "server": "mpc_policy.py --policy qmpc"},
+            "description": "Quality-MPC: the RobustMPC controller with the benchmark's VMAF-based QoE as its "
+                           "objective, served over the ns3-ai bridge."},
+    "bola": {"client": "ns3::BolaClient", "family": "buffer",
+             "params": {"BufferTargetSeconds": 20, "Gp": 5},
+             "description": "BOLA (Spiteri et al., INFOCOM 2016), native ns-3 client."},
+}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -155,6 +181,51 @@ def _read_decisions(path: Path) -> Dict[int, List[dict]]:
     return by_node
 
 
+_DECISION_LINE_RE = re.compile(
+    r"^([0-9.]+) ue-id: (\d+) videoId: \d+ segmentId: (\d+) newBitRate: (\d+) oldBitRate: \d+ "
+    r"estBitRate: (\S+) interTime: (\S+) T: (\S+) dT: (\S+) del: \S+ fetch: (\S+) loss: (\S+)")
+
+
+def _rows_from_simlog(path: Path) -> Dict[int, List[dict]]:
+    """Decision rows rebuilt from the ns-3 client's per-decision log line, for clients without a
+    decisions.jsonl (BOLA). The line is written by the shared DashClient code for every client, and
+    for the bridge arms it matches decisions.jsonl exactly: segmentId = segment_id - 1, newBitRate =
+    chosen_bitrate_bps, estBitRate = throughput_estimate_bps, T = buffer_level_s, interTime =
+    interruption_time_s (cumulative), fetch = segment_fetch_time_s, loss = loss_rate_recent.
+    RTT is not on the line, so it is left unknown. Same record shape and rung convention as the LLM."""
+    by_node: Dict[int, List[dict]] = {}
+    with open(path, errors="ignore", encoding="utf-8") as fh:
+        for line in fh:
+            m = _DECISION_LINE_RE.match(line)
+            if not m:
+                continue
+            bps = int(m.group(4))
+            if bps not in NS3_RATE_LADDER_BPS:
+                raise ExportError("newBitRate %d is not a ladder rung (%s)" % (bps, path))
+            node = int(m.group(2))
+            by_node.setdefault(node, []).append({
+                "sim_time_s": float(m.group(1)), "node_id": node, "segment_id": int(m.group(3)) + 1,
+                "chosen_bitrate_bps": bps, "chosen_rung": NS3_RATE_LADDER_BPS.index(bps),
+                "throughput_estimate_bps": float(m.group(5)), "interruption_time_s": float(m.group(6)),
+                "buffer_level_s": float(m.group(7)), "buffer_differential_s": float(m.group(8)),
+                "segment_fetch_time_s": float(m.group(9)), "loss_rate_recent": float(m.group(10)),
+                "smoothed_rtt_ms": None, "reason": "native",
+            })
+    for rows in by_node.values():
+        rows.sort(key=lambda r: int(r["segment_id"]))
+    return by_node
+
+
+def _load_quality(out_root: Path, video: str) -> Dict[Tuple[int, int], dict]:
+    """(segment, rung) -> {vmaf_min, ssim, psnr, duration_s} from <out>/_quality/<video>.json
+    (written by viewer_quality.py). Empty when absent: the media records then carry vmaf only."""
+    p = out_root / "_quality" / f"{video}.json"
+    if not p.is_file():
+        return {}
+    q = json.load(open(p, encoding="utf-8"))
+    return {(int(r["segment"]), int(r["rung"])): r for r in q["records"]}
+
+
 def _ffprobe_wh(mp4: Path) -> Optional[Tuple[int, int]]:
     try:
         out = subprocess.run(
@@ -227,17 +298,23 @@ def build_video_assets(video: str, abr_root: Path, out_root: Path, catalog: Dict
     segment_count = len(seg_ids)
     src_seg_root = abr_root / "by_video" / video / "segments"
 
-    # video-level segment metadata (one record per segment,rung)
+    # video-level segment metadata (one record per segment,rung); vmaf from the corrected metadata
+    # CSV, plus vmaf_min/ssim/psnr/duration_s from the quality cache when viewer_quality.py ran
+    quality = _load_quality(out_root, video)
     vseg_records: List[dict] = []
     for s in seg_ids:
         m = index.get(s)
         for r, lvl in enumerate(LADDER_LEVELS):
-            vseg_records.append({
+            rec = {
                 "type": "video_segment", "segment": s, "rung": r,
                 "bytes": int(round(m.size_bytes[lvl])),
                 "actual_bitrate_bps": int(round(m.actual_bitrate_kbps[lvl] * 1000)),
                 "vmaf": round(float(m.vmaf[lvl]), 4),
-            })
+            }
+            for k in ("duration_s", "vmaf_min", "ssim", "psnr"):
+                if quality.get((s, r), {}).get(k) is not None:
+                    rec[k] = quality[(s, r)][k]
+            vseg_records.append(rec)
     _write_jsonl(vdir / "segments.jsonl", vseg_records)
 
     # per-rung resolution via ffprobe (fallback to max-height ladder + orientation aspect)
@@ -269,6 +346,9 @@ def build_video_assets(video: str, abr_root: Path, out_root: Path, catalog: Dict
         "segment_file_pattern": "r{rung}/seg_{segment:04d}.mp4",
         "init_file_pattern": None,
     }
+    if quality:
+        video_json["quality_notes"] = json.load(
+            open(out_root / "_quality" / f"{video}.json", encoding="utf-8")).get("notes")
     _write_json(vdir / "video.json", video_json)
 
     # media: copy/symlink the 6 ABR rungs into r0..r5 (skip the unused 'original' rung)
@@ -326,11 +406,12 @@ def _clean_rows(rows: List[dict], segment_count: int, label: str) -> List[dict]:
     return [by_seg[s] for s in sorted(by_seg)]
 
 
-def _ue_segments(cleaned: List[dict], index, label: str) -> List[dict]:
+def _ue_segments(cleaned: List[dict], index, label: str, llm_fields: bool = True) -> List[dict]:
     """Cleaned, sorted decision rows -> contiguous 0-indexed DATA_SPEC segment records.
 
     Missing segments (dropped log lines) are carry-forward filled and flagged gap_filled=true so the
-    per-UE sequence is contiguous (DATA_SPEC: segment increases by one) without inventing rung changes."""
+    per-UE sequence is contiguous (DATA_SPEC: segment increases by one) without inventing rung changes.
+    llm_fields=False leaves out the LLM-only decision fields (fallback, decision_delay_s)."""
     present: Dict[int, dict] = {int(d["segment_id"]) - 1: d for d in cleaned}
     if not present:
         return []
@@ -357,6 +438,9 @@ def _ue_segments(cleaned: List[dict], index, label: str) -> List[dict]:
                              "rtt_ms": None, "loss_rate": None, "fallback": False,
                              "decision_delay_s": None},
             }
+            if not llm_fields:
+                for k in ("fallback", "decision_delay_s"):
+                    rec["decision"].pop(k)
             recs.append(rec)
             last_rec = rec
             prev_prev_bps, prev_bps = prev_bps, bitrate
@@ -387,6 +471,9 @@ def _ue_segments(cleaned: List[dict], index, label: str) -> List[dict]:
                 "decision_delay_s": round(float(d.get("inference_latency_ms", 0.0) or 0.0) / 1000.0, 6),
             },
         }
+        if not llm_fields:
+            for k in ("fallback", "decision_delay_s"):
+                rec["decision"].pop(k)
         recs.append(rec)
         last_rec = rec
         prev_prev_bps, prev_bps = prev_bps, bitrate
@@ -614,35 +701,60 @@ def _keeper_events_summary(node: int, sl, segs: List[dict], segment_count: int):
 
 def build_bundle(video: str, run: str, src_root: Path, abr_root: Path, out_root: Path,
                  catalog: Dict[str, dict], rng_run: int, sim_stop_arg: Optional[float],
-                 commit: Optional[str], now_iso: str, task_dir: Optional[Path]) -> Tuple[Path, dict]:
-    run_dir = src_root / video / run
+                 commit: Optional[str], now_iso: str, task_dir: Optional[Path],
+                 algorithm: str = "llm", cell_dir: Optional[str] = None, keeper_node: Optional[int] = None,
+                 model: Optional[str] = "abr-llm-v2", source_commit: Optional[str] = None,
+                 notes_extra: str = "") -> Tuple[Path, dict]:
+    """One bundle for (video, run). run is the bundle's run_N label (it fixes the feeder rate);
+    cell_dir is the source cell folder when it differs (BOLA cells are named run_<seed>). Bridge arms
+    read decisions.jsonl and match their task log; BOLA rows come from the cell's own sim.log."""
+    algo = ALGORITHMS[algorithm]
+    is_llm = algorithm == "llm"
+    run_dir = src_root / video / (cell_dir or run)
     dec_path = run_dir / "decisions.jsonl"
-    if not dec_path.is_file():
-        raise ExportError("decisions.jsonl not found: %s" % dec_path)
+    cell_simlog = run_dir / "sim.log"
+    if dec_path.is_file():
+        by_node = _read_decisions(dec_path)
+        row_source = dec_path
+    elif cell_simlog.is_file():
+        by_node = _rows_from_simlog(cell_simlog)
+        row_source = cell_simlog
+        if not by_node:
+            raise ExportError("no decision lines in %s" % cell_simlog)
+    else:
+        raise ExportError("neither decisions.jsonl nor sim.log in %s" % run_dir)
     meta_csv = abr_root / "metadata" / f"{video}_segments.csv"
     index = load_metadata_index(str(meta_csv))
 
-    by_node = _read_decisions(dec_path)
     nodes = sorted(by_node.keys())
-    node_to_ue = {nid: i for i, nid in enumerate(nodes)}
     segment_count = len(index)
 
-    # Real per-cell ns-3 stdout for the paper run (logs_bench/task_*). Matched by filename
-    # (video+rate) and, among duplicate/partial executions, by best decision agreement.
+    # Real per-cell ns-3 stdout. Bridge arms: the task log (logs_bench*/task_*), matched by filename
+    # (video+rate) and, among duplicate/partial executions, by best decision agreement. Native clients
+    # write sim.log into the cell itself, which is also where their rows came from (agreement 1.0).
     rate_label = _rate_label(run)
     scored_rungs = {(nid, int(d["segment_id"]) - 1): int(d["chosen_rung"])
                     for nid in nodes for d in by_node[nid]}
-    task_match = _best_task_log(task_dir, video, rate_label, scored_rungs) if task_dir else None
+    if row_source == cell_simlog:
+        task_match = (cell_simlog, 1.0, len(scored_rungs))
+    else:
+        task_match = _best_task_log(task_dir, video, rate_label, scored_rungs) if task_dir else None
 
     # Parse the real ns-3 log (if attached) for ground-truth playback/stalls.
     sl, sim_end = (None, 0.0)
     if task_match:
         sl, sim_end = _parse_simlog(open(task_match[0], errors="ignore", encoding="utf-8").read(), nodes)
 
-    # Keep ONE UE: the one that received the whole video (re-indexed to ue 0).
-    keeper = _pick_keeper(by_node, segment_count)
+    # Keep ONE UE (re-indexed to ue 0): the one that received the whole video, or --keeper-node so
+    # every algorithm's bundle shows the same user position.
+    if keeper_node is not None:
+        if keeper_node not in by_node:
+            raise ExportError("keeper node %d not in %s (nodes %s)" % (keeper_node, row_source, nodes))
+        keeper = keeper_node
+    else:
+        keeper = _pick_keeper(by_node, segment_count)
     cleaned = _clean_rows(by_node[keeper], segment_count, f"{video}/{run} node {keeper}")
-    all_segs = _ue_segments(cleaned, index, f"{video}/{run} node {keeper}")
+    all_segs = _ue_segments(cleaned, index, f"{video}/{run} node {keeper}", llm_fields=is_llm)
     all_samples = _ue_samples(cleaned)
     all_events, ue_extra, playback_end = _keeper_events_summary(keeper, sl, all_segs, segment_count)
     for lst in (all_segs, all_samples):
@@ -673,22 +785,24 @@ def build_bundle(video: str, run: str, src_root: Path, abr_root: Path, out_root:
     all_samples.sort(key=lambda r: r["t"])
 
     rate_bps = _rate_bps(run)
-    run_id = f"{video}_llm_{_rate_label(run)}_{run}"
+    run_id = f"{video}_{algorithm}_{_rate_label(run)}_{run}"
     bundle = out_root / run_id
 
     run_json = {
         "bundle_version": 1,
         "run_id": run_id,
         "created_utc": now_iso,
-        "source_commit": commit,
+        "source_commit": source_commit or commit,
+        "exporter_commit": commit,
         "scenario": "ntn-iab-quic-dash-ai",
         "policy": {
-            "name": "llm",
-            "client": "ns3::AiDashClient",
-            "model": "abr-llm-v2",
-            "description": ("Content-aware SLM ABR policy (greedy-teacher). NOTE: encoded segments are "
-                            "2.0 s but the simulated player buffered in 3.3 s units; sim times are "
-                            "copied verbatim (not rescaled)."),
+            "name": algorithm,
+            "client": algo["client"],
+            "family": algo["family"],
+            "model": model if is_llm else None,
+            "params": algo["params"],
+            "description": (algo["description"] + " NOTE: encoded segments are 2.0 s but the simulated "
+                            "player buffered in 3.3 s units; sim times are copied verbatim (not rescaled)."),
         },
         "network": {
             "num_ues": 1,                       # this bundle includes ONE UE (the whole-video receiver)
@@ -719,12 +833,16 @@ def build_bundle(video: str, run: str, src_root: Path, abr_root: Path, out_root:
                   "times verbatim. sim_stop_time_s is this UE's session end."
                   if task_match else
                   "SINGLE-UE bundle (whole-video receiver, ue=0). No ns-3 sim.log attached -> stalls fall "
-                  "back to decisions.jsonl deltas. 2.0 s media vs 3.3 s player buffering; times verbatim."),
+                  "back to decisions.jsonl deltas. 2.0 s media vs 3.3 s player buffering; times verbatim.")
+                 + (" " + notes_extra if notes_extra else ""),
     }
+    if row_source == cell_simlog:
+        run_json["decision_source"] = ("sim.log per-decision lines (the client writes no decisions.jsonl); "
+                                       "rtt_ms is not logged there")
 
-    # policy.log: human-readable reconstruction of the decision stream (exact to decisions.jsonl)
+    # policy.log (LLM only): human-readable reconstruction of the decision stream (exact to decisions.jsonl)
     log_lines = [f"# reconstructed from {dec_path} (exact decision record)\n"]
-    for d in sorted((d for rows in by_node.values() for d in rows), key=lambda r: float(r["sim_time_s"])):
+    for d in sorted((d for rows in by_node.values() for d in rows if is_llm), key=lambda r: float(r["sim_time_s"])):
         log_lines.append(
             "%10.4f ue-id: %d seg(1-idx): %d rung: %d bitrate: %d thr_est: %.0f buf: %.3f "
             "infer_ms: %.1f reason: %s\n" % (
@@ -739,7 +857,8 @@ def build_bundle(video: str, run: str, src_root: Path, abr_root: Path, out_root:
     _write_jsonl(bundle / "player_events.jsonl", all_events)
     _write_jsonl(bundle / "samples.jsonl", all_samples)
     _write_json(bundle / "summary.json", {"ues": summaries})
-    _write_text(bundle / "logs" / "policy.log", "".join(log_lines))
+    if is_llm:
+        _write_text(bundle / "logs" / "policy.log", "".join(log_lines))
     if task_match:  # copy the REAL ns-3 stdout for this cell as logs/sim.log (read-only on source)
         _write_text(bundle / "logs" / "sim.log",
                     open(task_match[0], errors="ignore", encoding="utf-8").read())
@@ -834,6 +953,16 @@ def main() -> None:
     ap.add_argument("--sim-stop", type=float, default=None, help="override sim_stop_time_s (else observed max)")
     ap.add_argument("--force", action="store_true", help="overwrite existing bundles")
     ap.add_argument("--list", action="store_true", help="dry-run: print planned bundles, write nothing")
+    ap.add_argument("--algorithm", choices=sorted(ALGORITHMS), default="llm",
+                    help="ABR algorithm of --src (sets policy.* and the bundle name)")
+    ap.add_argument("--cell-dir", default=None,
+                    help="source cell folder when it differs from run_N (BOLA: run_<seed>); one run only")
+    ap.add_argument("--keeper-node", type=int, default=None,
+                    help="ns-3 node id of the UE to keep (same in every algorithm's bundle)")
+    ap.add_argument("--model", default="abr-llm-v2", help="policy.model for --algorithm llm")
+    ap.add_argument("--source-commit", default=None,
+                    help="ns-3 commit of the binary that produced the runs (default: exporter HEAD)")
+    ap.add_argument("--notes", default="", help="text appended to run.json notes")
     args = ap.parse_args()
 
     repo = _HERE.parent.parent
@@ -855,13 +984,16 @@ def main() -> None:
             ap.error(f"--out ({out_real}) resolves inside a source tree ({g}); refusing")
 
     plan = [(v, r) for v in videos for r in runs]
+    if args.cell_dir and len(runs) != 1:
+        ap.error("--cell-dir maps one run_N; pass exactly one --runs value with it")
     if args.list:
         print(f"[dry-run] out={out_real}  media={'on' if args.with_media else 'off'} ({args.media_mode})")
         total = 0.0
         for v, r in plan:
-            rd = src_root / v / r / "decisions.jsonl"
-            ok = "OK" if rd.is_file() else "MISSING decisions.jsonl"
-            print(f"  {v}_llm_{_rate_label(r)}_{r}  <- {rd}  [{ok}]")
+            cd = src_root / v / (args.cell_dir or r)
+            ok = ("OK decisions.jsonl" if (cd / "decisions.jsonl").is_file() else
+                  "OK sim.log" if (cd / "sim.log").is_file() else "MISSING decisions.jsonl/sim.log")
+            print(f"  {v}_{args.algorithm}_{_rate_label(r)}_{r}  <- {cd}  [{ok}]")
         if args.with_media:
             for v in videos:
                 segdir = abr_root / "by_video" / v / "segments"
@@ -900,7 +1032,7 @@ def main() -> None:
                 shutil.rmtree(_assert_write_target(shared))
     plan = [(v, r) for v, r in plan if v in good_videos]
     for v, r in plan:
-        run_id = f"{v}_llm_{_rate_label(r)}_{r}"
+        run_id = f"{v}_{args.algorithm}_{_rate_label(r)}_{r}"
         bundle = out_root / run_id
         if bundle.exists() and not args.force:
             print(f"[skip] {run_id} exists (use --force)")
@@ -909,7 +1041,10 @@ def main() -> None:
             shutil.rmtree(_assert_write_target(bundle))
         try:
             bundle, _ = build_bundle(v, r, src_root, abr_root, out_root, catalog,
-                                     args.rng_run, args.sim_stop, commit, now_iso, task_dir)
+                                     args.rng_run, args.sim_stop, commit, now_iso, task_dir,
+                                     algorithm=args.algorithm, cell_dir=args.cell_dir,
+                                     keeper_node=args.keeper_node, model=args.model,
+                                     source_commit=args.source_commit, notes_extra=args.notes)
         except ExportError as e:
             print(f"[FAIL] {run_id}: {e}")
             continue
